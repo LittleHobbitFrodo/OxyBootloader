@@ -1,21 +1,12 @@
 #![no_main]
 #![no_std]
 
-/*use uefi::boot::{self, SearchType};
-
-use uefi::proto::loaded_image::LoadedImage;
-use uefi::{Identify, Result};
-use uefi::proto::device_path::text::{
-    AllowShortcuts, DevicePathToText, DisplayOnly,
-};*/
-
 pub mod utils;
 pub mod memmap;
 pub mod prelude;
 pub use prelude::*;
 pub mod fs;
-
-use crate::memmap::MEMMAP;
+pub mod config;
 
 
 #[entry]
@@ -27,11 +18,35 @@ fn main() -> Status {
 
     memmap::parse();
 
-    list_root();
+    let config = match config::read() {
+        Ok(cfg) => cfg,
+        Err(status) => {
+            println!("error while reading config: {status}");
+            panic!();
+        },
+    };
 
 
-    boot::stall(10_000_000);
+    println!("\nconfig found:");
+    if let Some(delay) = config.delay() {
+        println!("\tdelay: {delay}");
+    } else {
+        println!("\tdelay is not set");
+    }
+
+    if let Some(path) = config.kernel_path() {
+        println!("\tpath: {path}");
+    } else {
+        println!("\tpath not set");
+    }
+
+    if let Some(params) = config.kernel_params() {
+        println!("\tparams: {params}");
+    } else {
+        println!("\tparams not set");
+    }
+
+
+    boot::stall(100_000_000);
     Status::SUCCESS
 }
-
-

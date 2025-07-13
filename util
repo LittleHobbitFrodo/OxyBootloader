@@ -6,35 +6,41 @@ args="${@:1}"
 
 for i in $args; do
 
-  echo i: $i
+	case "$i" in
+		build)
 
-  case "$i" in
-    build)
+		echo building OxyBoot
 
-      echo building OxyBoot
+		cargo build --target x86_64-unknown-uefi --release
 
-      cargo build --target x86_64-unknown-uefi --release
+		if [ "$?" != 0 ]; then
+			echo ERROR: failed to build the bootloader
+			exit 1
+		fi
 
-      if [ "$?" != 0 ]; then
-        echo ERROR: failed to build the bootloader
-        exit 1
-      fi
+		if [ ! -e ./efi-img/EFI/BOOT ]; then
+			mkdir -p efi-img/EFI/BOOT/
+		fi
 
-      if [ ! -e ./efi-img/EFI/BOOT ]; then
-          mkdir -p efi-img/EFI/BOOT/
-      fi
+		cp ./target/x86_64-unknown-uefi/release/OxyBoot.efi ./efi-img/EFI/BOOT/BOOTX64.EFI
 
-      cp ./target/x86_64-unknown-uefi/release/OxyBoot.efi ./efi-img/EFI/BOOT/BOOTX64.EFI
+		#	add bootloader configuration
+		mkdir -p efi-img/oxy/
+		cp ./oxyboot.toml ./efi-img/oxy/
 
-    ;;
-    run)
+		#	copy kernel executable
 
-      qemu-system-x86_64 \
-  -drive format=raw,file=fat:rw:efi-img/ \
-  -bios /usr/share/OVMF/OVMF_CODE.fd
+		cp ./kernel.elf ./efi-img/oxy/kernel.elf
 
-    ;;
 
-  esac
+	;;
+	run)
+
+		qemu-system-x86_64 \
+		-drive format=raw,file=fat:rw:efi-img/ \
+		-bios /usr/share/OVMF/OVMF_CODE.fd
+
+	;;
+esac
 
 done

@@ -14,6 +14,11 @@ pub use uefi::println;
 pub extern crate allocator_api2;
 pub extern crate bitflags;
 pub extern crate spin;
+pub extern crate toml;
+pub extern crate serde;
+extern crate alloc;
+
+pub use alloc::string::String;
 
 pub use bitflags::*;
 pub use spin::Mutex;
@@ -21,8 +26,24 @@ pub use spin::Mutex;
 
 pub use crate::memmap::MemmapEntry;
 
-pub use allocator_api2 as alloc;
 
 
 #[global_allocator]
 static ALLOCATOR: uefi::allocator::Allocator = uefi::allocator::Allocator;
+
+
+#[macro_export]
+macro_rules! dbg {
+
+    () => {
+        $crate::eprintln!("[{}:{}:{}]", core::file!(), core::line!(), core::column!());
+    };
+    ($val:expr $(,)?) => {{
+
+
+        let value = &$val;
+
+        $crate::print!("[{}:{}:{}] {} = {:#?}", core::file!(), core::line!(), core::column!(), core::stringify!($val),
+        &&value as &dyn core::fmt::Debug);
+    }};
+}
