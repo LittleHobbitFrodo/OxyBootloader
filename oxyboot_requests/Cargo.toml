@@ -1,0 +1,12 @@
+[package]
+name = "oxyboot_requests"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+
+
+[features]
+default=["kernel"]  #   bootloader mode is enabled by disablig this feature
+kernel=[]
+bootloader=[]

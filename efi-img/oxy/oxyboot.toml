@@ -8,4 +8,4 @@ kernel="\\oxy\\kernel.elf"
 
 
 #   kernel parameters
-params="message"
+params="print hello"

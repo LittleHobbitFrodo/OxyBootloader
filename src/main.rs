@@ -4,13 +4,19 @@
 pub mod utils;
 pub mod memmap;
 pub mod prelude;
+use elf_loader::{mmap::MmapImpl, segment::PAGE_SIZE};
 pub use prelude::*;
 pub mod fs;
 pub mod config;
+pub use prelude::elf;
+
+use oxyboot_requests::{KernelEntryRequest, Request};
+use core::ptr::NonNull;
 
 
 #[entry]
 fn main() -> Status {
+
 
     uefi::helpers::init().unwrap();
 
@@ -26,25 +32,20 @@ fn main() -> Status {
         },
     };
 
+    let (kernel, size) = match load_kernel(&config) {
+        Ok(data) => data,
+        Err(o) => if let Some(msg) = o {
+            println!("error while loading kernel: {msg}");
+            panic!();
+        } else {
+            println!("error while loading kernel : unknown error");
+            panic!();
+        }
+    };
 
-    println!("\nconfig found:");
-    if let Some(delay) = config.delay() {
-        println!("\tdelay: {delay}");
-    } else {
-        println!("\tdelay is not set");
-    }
+    println!("kernel loaded at {kernel:p} : {size}");
 
-    if let Some(path) = config.kernel_path() {
-        println!("\tpath: {path}");
-    } else {
-        println!("\tpath not set");
-    }
 
-    if let Some(params) = config.kernel_params() {
-        println!("\tparams: {params}");
-    } else {
-        println!("\tparams not set");
-    }
 
 
     boot::stall(100_000_000);
