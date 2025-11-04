@@ -43,7 +43,7 @@ fn main() -> Status {
         }
     };
 
-    println!("kernel loaded at {kernel:p} : {size}");
+    println!("kernel loaded at {kernel:p} (size: {size})");
 
 
 
