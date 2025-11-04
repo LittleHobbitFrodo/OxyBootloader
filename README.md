@@ -12,3 +12,6 @@ OxyBoot is simple bootloader written entirelly in rust with use of the `uefi-rs`
 
 just simply run `./util build`
 - use `./util build run` to run the bootloader in emulator
+
+## Important note
+The `util` helper script was tested on Fedora Linux version 42. The path to the OVMF firmware may not be the same on other linux distributions
