@@ -1,7 +1,10 @@
 use allocator_api2::boxed::Box;
-use elf_loader::object::{ElfBinary, ElfObject};
-use uefi::boot::{MemoryType, ScopedProtocol, PAGE_SIZE};
+//use elf_loader::object::{ElfBinary, ElfObject};
+use uefi::boot::{LoadImageSource, MemoryType, PAGE_SIZE, ScopedProtocol, load_image};
 use uefi::prelude::*;
+use uefi::proto::BootPolicy;
+use uefi::proto::device_path::{self, DevicePath};
+use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode, FileType};
 use uefi::CStr16;
@@ -9,10 +12,10 @@ use crate::config::Config;
 use crate::{print, println, String, config::ReadError};
 use core::fmt::Write;
 use core::ptr::NonNull;
+use core::slice;
 use allocator_api2::vec;
 
-use elf_loader::{Elf, ElfExec};
-
+//use elf_loader::{Elf, ElfExec};
 pub enum FileTypeCheck {
     DoesNotExist,
     WrongType,
@@ -151,118 +154,54 @@ pub fn read_file(sfs: &mut Sfs, path: &str) -> Result<String, ReadError> {
 
 }
 
-#[inline(never)]
-pub fn load_kernel(config: &Config) -> Result</*KernelData*/(NonNull<u8>, usize), Option<String>> {
+pub fn load_kernel(config: Config) -> Result</*LoadedImage*/&'static mut [u8], String> {
 
-    //  Open SimpleFileSystem protocol
+    let kernel_path = match config.kernel_path() {
+        Some(p) => p,
+        None => return Err("no path given".into())
+    };
 
     let mut sfs = match boot::get_image_file_system(boot::image_handle()) {
-        Ok(sfs) => sfs,
-        Err(_) => return Err(Some(String::from("failed to open SFS")))
+        Ok(fs) => fs,
+        Err(_) => return Err("failed to open simple filesystem".into())
     };
-
-    //  Open volume
-
-    /*let root = match sfs.get_mut() {
-        Some(sfs) => sfs,
-        None => return Err(Some(String::from("failed to open sfs")))
-    };*/
 
     let mut root = match sfs.open_volume() {
-        Ok(vol) => vol,
-        Err(_) => return Err(Some(String::from("failed to open root volume"))),
+        Ok(r) => r,
+        Err(_) => return Err("failed to open the volume".into()),
     };
 
+    let mut name_buf = [0u16; 256];
 
+    assert!(kernel_path.len() < 256);
+    let filename = CStr16::from_str_with_buf(kernel_path.as_str().trim_end_matches('\0'), &mut name_buf).expect("failed to convert string to utf16");
 
-    //  Prepare path
-
-    let mut path_buf = [0u16; 64];
-
-    let path = match config.kernel_path() {
-        Some(p) => p,
-        None => return Err(Some(String::from("kernel path is not set, please specify it in the config"))),
+    let handle = match root.open(filename, FileMode::Read, FileAttribute::empty()) {
+        Ok(h) => h,
+        Err(_) => return Err("failed to open kernel".into())
     };
 
-    let path = CStr16::from_str_with_buf(path, &mut path_buf).unwrap();
-
-
-
-    //  Open kernel file handle
-
-    let file_handle = match root.open(path, FileMode::Read, FileAttribute::empty()) {
-        Ok(fh) => fh,
-        Err(e) => return Err(Some(String::from("failed to open handle for kernel"))),
-    };
-
-
-    //  Open kernel file
-
-    let mut file = match file_handle.into_regular_file() {
+    let mut file = match handle.into_regular_file() {
         Some(f) => f,
-        None => return Err(Some(String::from("kernel is not a regular file"))),
+        None => return Err("path is not pointing to file".into())
     };
 
+    let mut info_buf = [0u8; 512];
 
+    let info: &mut FileInfo = file.get_info(&mut info_buf).unwrap();
+    let file_len = info.file_size() as usize;
 
-    //  Get size of the kernel file
+    
 
-    let mut buf= [0u8; 1024];
-
-    let mut file_size = match file.get_info::<FileInfo>(&mut buf) {
-        Ok(info) => info.file_size(),
-        Err(mut e) => {
-
-            //  Try again with bigger buffer
-            if let Some(size) = e.data() {
-                let mut buf = vec![0u8; *size];
-
-                if let Ok(data) = file.get_info::<FileInfo>(&mut buf) {
-                    data.file_size()
-                } else {
-                    return Err(Some(String::from("failed to read kernel metadata")));
-                }
-
-            } else {
-                return Err(Some(String::from("failed to read kernel metadata")));
-            }
-
-        },
-    } as usize;
-
-    let _ = buf;
-
-
-    //  Allocate pages for to load kernel
-
-        //  align to pages
-    file_size = (file_size + PAGE_SIZE - 1) / PAGE_SIZE;
-
-    let mut kernel = match boot::allocate_pages(boot::AllocateType::AnyPages, MemoryType::LOADER_DATA, file_size) {
-        Ok(ptr) => ptr,
-        Err(_) => return Err(Some(String::from("failed to allocate pages for kernel")))
+    let (ptr, mut pages) = match boot::allocate_pages(boot::AllocateType::AnyPages, MemoryType::LOADER_DATA, (file_len / 4096) + 1) {
+        Ok(ptr) => (ptr, unsafe { slice::from_raw_parts_mut(ptr.as_ptr(), file_len) }),
+        Err(_) => return Err("failed to allocate pages".into())
     };
 
-    let mut buf = unsafe { core::slice::from_raw_parts_mut(kernel.as_mut(), file_size * PAGE_SIZE) };
+    unsafe { ptr.write_bytes(0, file_len); }
 
-    
-    if let Err(e) = file.read(&mut buf) {
-        return Err(Some(String::from("failed to read kernel data")));
-    }
+    file.read(&mut pages).expect("failed to read kernel file");
 
-    let elf = ElfBinary::new("kernel", &buf);
-
-    //ElfExec::relocate(self, scope, pre_find, deal_unknown, local_lazy_scope)
-    
-
-
-    //let elf = ElfExec::relocate(self, scope, pre_find, deal_unknown, local_lazy_scope)
-
-    //let elf = ElfExec::new(image).map_err(|_| "Invalid ELF")?;
-
-    //Ok(KernelData::new(kernel, file_size))
-
-    Ok((kernel, file_size))
-
+    Ok(pages)
 
 }

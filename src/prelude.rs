@@ -17,12 +17,12 @@ pub extern crate spin;
 pub extern crate toml;
 pub extern crate serde;
 pub extern crate oxyboot_requests;
-pub extern crate elf_loader;
+//pub extern crate elf_loader;
 extern crate alloc;
 
 pub use alloc::string::String;
 
-pub use elf_loader as elf;
+//pub use elf_loader as elf;
 
 pub use oxyboot_requests::*;
 
