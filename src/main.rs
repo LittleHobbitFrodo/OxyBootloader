@@ -4,70 +4,84 @@
 pub mod utils;
 pub mod memmap;
 pub mod prelude;
-//use elf_loader::{mmap::MmapImpl, segment::PAGE_SIZE};
-use goblin::elf::Elf;
 pub use prelude::*;
+use uefi::{boot::exit_boot_services, mem::memory_map::MemoryMapMut, proto::console::text::Output};
 pub mod fs;
 pub mod config;
-//pub use prelude::elf;
 
-use oxyboot_requests::{KernelEntryRequest, Request};
-use uefi::{boot::{exit_boot_services, load_image, start_image}, proto::media::load_file};
-use core::ptr::NonNull;
+//use oxyboot_requests::{KernelEntryRequest, Request};
+//use uefi::{boot::{exit_boot_services, load_image, start_image}, proto::media::load_file};
 
+pub mod kernel;
+pub mod misc;
+use misc::*;
+
+
+//  TODO: rewrite the config module
 
 #[entry]
 fn main() -> Status {
 
     uefi::helpers::init().unwrap();
 
-    println!("Hello world!\n\n");
+    uefi::println!("Hello world!\n\n");
 
     memmap::parse();
 
     let config = match config::read() {
         Ok(cfg) => cfg,
         Err(status) => {
-            println!("error while reading config: {status}");
+            uefi::println!("error while reading config: {status}");
             panic!();
         },
     };
 
-    let kernel = match load_kernel(config) {
+    let kernel = match kernel::load(&config) {
         Ok(slice) => slice,
-        Err(e) => panic!("{e}"),
+        Err(e) => panic!("failed to load kernel: {e}"),
     };
 
-    println!("kernel loaded at {:p} (size: {})", kernel.as_ptr(), kernel.len());
+    uefi::println!("kernel loaded");
 
-    //let memmap = unsafe { exit_boot_services(None) };
-
-    let elf = match Elf::parse(kernel) {
-        Ok(elf) => elf,
-        Err(e) => {
-            println!("failed to parse elf file: {e}");
-            panic!("failed to parse the elf file: {e}")
+    let pages = match kernel::prepare(kernel) {
+        Ok(pages) => pages,
+        Err(msg) => {
+            uefi::println!("failed to prepare kernel: {msg}");
+            panic!();
         },
     };
 
-    println!("kernel entry: {:p}", elf.entry as *mut u8);
-    
+    uefi::println!("kernel prepared");
 
-    /*let kernel = unsafe {
-        core::slice::from_raw_parts(kernel.as_ptr(), 4096)
+    let mut fb = match get_framebuffer() {
+        Ok(fb) => fb,
+        Err(e) => {
+            uefi::println!("failed to get framebuffer: {e}");
+            panic!();
+        }
     };
+    //println!(fb: "hello world!");
 
-    println!("kernel:");
-    for i in kernel {
-        print!("{}", *i as char);
+    //boot::stall(100_000_000);
+
+
+    let mut memmap = unsafe { exit_boot_services(None) };
+    memmap.sort();
+
+    /*for page in pages.iter() {
+        if let AllocatedPage::Executable(p) = page {
+            if let Err(_) = kernel::make_executable(p) {
+                panic!();   //  cannot print text yet
+            }
+        }
     }*/
-
-
-    //load_image(parent_image_handle, source)
-    //start_image(image_handle)
-    //exit_boot_services(None)
+    
 
     boot::stall(100_000_000);
     Status::SUCCESS
 }
 
+/*#[panic_handler]
+fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}*/

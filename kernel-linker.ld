@@ -2,7 +2,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0xFFFFFFFF80000000;   /* or where your kernel should be mapped */
+    . = 0xFFFFFFFF80000000;
 
     .text :
     {

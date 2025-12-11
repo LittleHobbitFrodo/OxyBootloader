@@ -154,7 +154,7 @@ pub fn read_file(sfs: &mut Sfs, path: &str) -> Result<String, ReadError> {
 
 }
 
-pub fn load_kernel(config: Config) -> Result</*LoadedImage*/&'static mut [u8], String> {
+pub fn load_kernel(config: Config) -> Result<&'static mut [u8], String> {
 
     let kernel_path = match config.kernel_path() {
         Some(p) => p,

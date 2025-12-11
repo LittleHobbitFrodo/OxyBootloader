@@ -16,9 +16,12 @@ use crate::fs::exists_and_is_file;
 /// Structure representing the configuration loaded from the config file
 #[derive(Debug)]
 pub struct Config {
-    delay: Option<u64>,     //  in microseconds
-    kernel: Option<String>,   //  path to the kernel
-    params: Option<String>,   //  kernel parameters
+    /// Delay in microseconds
+    delay: Option<u64>,
+    /// Path to the kernel
+    kernel: Option<String>,
+    /// Kernel parameters
+    params: Option<String>,
 }
 
 impl Config {
@@ -40,12 +43,22 @@ impl Config {
     /// Returns the path to the kernel
     /// - if `None` is returned, the value have not been set by the config file
     #[inline(always)]
-    pub fn kernel_path(&self) -> &Option<String> { &self.kernel }
+    pub fn kernel_path(&self) -> Option<&String> {
+        match self.kernel {
+            Some(ref path) => Some(&path),
+            None => None
+        }
+    }
 
     /// Returns kernel parameters
     /// - if `None` is returned, the value has not been set by the config file
     #[inline(always)]
-    pub fn kernel_params(&self) -> &Option<String> { &self.params }
+    pub fn kernel_params(&self) -> Option<&String> {
+        match self.params {
+            Some(ref params) => Some(params),
+            None => None
+        }
+    }
 
 
     /// Parses toml configuration from string and returns message for the user if fails
