@@ -18,6 +18,8 @@ pub struct FrameBuffer {
     pub color: u32,
 }
 
+unsafe impl Send for FrameBuffer {}
+
 impl FrameBuffer {
 
     pub const fn new(size: (usize, usize), pixel_fmt: u64, mask: PixelBitmask,
@@ -25,6 +27,15 @@ impl FrameBuffer {
         Self {
             w: size.0 as u64, h: size.1 as u64, pixel_fmt, bit_mask: mask,
             pointer, row: pos.0, line: pos.1, color: 0xffffff
+        }
+    }
+
+    pub const fn empty() -> Self {
+        Self {
+            w: 0, h: 0, pixel_fmt: 0,
+            bit_mask: PixelBitmask { red: 0, green: 8, blue: 16, reserved: 24 },
+            pointer: NonNull::dangling(),
+            row: 0, line: 0, color: 0xffffff,
         }
     }
 

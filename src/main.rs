@@ -4,6 +4,8 @@
 pub mod utils;
 pub mod memmap;
 pub mod prelude;
+use core::{ops::DerefMut, time::Duration};
+
 pub use prelude::*;
 use uefi::{boot::exit_boot_services, mem::memory_map::MemoryMapMut, proto::console::text::Output};
 pub mod fs;
@@ -16,6 +18,10 @@ pub mod kernel;
 pub mod misc;
 use misc::*;
 
+use kernel::AllocatedPage;
+
+pub static FRAMEBUFFER: Mutex<FrameBuffer> = Mutex::new(FrameBuffer::empty());
+
 
 //  TODO: rewrite the config module
 
@@ -23,8 +29,6 @@ use misc::*;
 fn main() -> Status {
 
     uefi::helpers::init().unwrap();
-
-    uefi::println!("Hello world!\n\n");
 
     memmap::parse();
 
@@ -43,8 +47,8 @@ fn main() -> Status {
 
     uefi::println!("kernel loaded");
 
-    let pages = match kernel::prepare(kernel) {
-        Ok(pages) => pages,
+    let (pages, kernel_entry) = match kernel::prepare(kernel) {
+        Ok((pages, entry)) => (pages, entry),
         Err(msg) => {
             uefi::println!("failed to prepare kernel: {msg}");
             panic!();
@@ -53,35 +57,50 @@ fn main() -> Status {
 
     uefi::println!("kernel prepared");
 
-    let mut fb = match get_framebuffer() {
+    let fb = match get_framebuffer() {
         Ok(fb) => fb,
         Err(e) => {
             uefi::println!("failed to get framebuffer: {e}");
             panic!();
         }
     };
-    //println!(fb: "hello world!");
 
-    //boot::stall(100_000_000);
-
-
+    *FRAMEBUFFER.lock() = fb;
+    
     let mut memmap = unsafe { exit_boot_services(None) };
     memmap.sort();
 
-    /*for page in pages.iter() {
+    for page in pages.iter() {
         if let AllocatedPage::Executable(p) = page {
-            if let Err(_) = kernel::make_executable(p) {
-                panic!();   //  cannot print text yet
+            if let Some(entry) = kernel::make_executable(p) {
+                crate::println!("returned entry: {entry:?}");
             }
+            flush_page_cache();
         }
-    }*/
-    
+    }
 
-    boot::stall(100_000_000);
-    Status::SUCCESS
+    crate::println!("kernel marked as executable");
+
+    let stack = match setup_stack::<32>() {
+        Ok(s) => s,
+        Err(_) => {
+            crate::println!("failed to setup stack");
+            panic!()
+        }
+    };
+
+
+    switch_to_kernel(kernel_entry, stack);
+    
 }
 
 /*#[panic_handler]
 fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     loop {}
 }*/
+
+
+pub enum Either<A: Sized, B: Sized> {
+    One(A),
+    Two(B),
+}

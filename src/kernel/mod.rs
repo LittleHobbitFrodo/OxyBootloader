@@ -1,15 +1,19 @@
 //! Loads and parses the kernel
 
-use core::slice;
+use core::ops::BitOr;
+use core::{arch::asm, slice};
 use core::ptr::NonNull;
 
 use crate::config::Config;
 use allocator_api2::{boxed::Box, vec::Vec};
+use bitflags::{Flags, bitflags};
 use goblin::{elf::{Elf, ProgramHeader}, error::Error};
 use uefi::{CStr16, Status, allocator, boot::{self, AllocateType, MemoryAttribute, MemoryType, allocate_pages}, proto::media::file::{File, FileAttribute, FileInfo, FileMode}};
-use crate::String;
+use x86_64::structures::paging::{PageTable, PageTableFlags};
+use x86_64::structures::paging::page_table::{PageTableEntry, PageTableLevel};
+use crate::{Either, String};
 
-use x86_64::registers::control::Cr3;
+use x86_64::{VirtAddr, registers::control::Cr3};
 
 //use uefi::boot::MemoryDescriptor
 
@@ -69,8 +73,9 @@ pub fn load(config: &Config) -> Result<Box<[u8]>, &'static str> {
 }
 
 
+
 /// Parses the kernel and allocates memory for it
-pub fn prepare(kernel: Box<[u8]>) -> Result<Vec<AllocatedPage>, String> {
+pub fn prepare(kernel: Box<[u8]>) -> Result<(Vec<AllocatedPage>, extern "C" fn() -> !), String> {
 
     let elf = match Elf::parse(kernel.as_ref()) {
         Ok(elf) => elf,
@@ -113,8 +118,9 @@ pub fn prepare(kernel: Box<[u8]>) -> Result<Vec<AllocatedPage>, String> {
 
     }
 
+    let entry = unsafe { core::mem::transmute(elf.entry as usize) };
 
-    Ok(pages)
+    Ok((pages, entry))
 
 }
 
@@ -165,8 +171,8 @@ fn prepare_segment(kernel: &'_ Box<[u8]>, header: &'_ ProgramHeader) -> Result<A
 
     let frange = {
         let r = header.file_range();
-        uefi::println!("\tf: range({} => {}) : {}", r.start, r.end, kernel.len());
-        uefi::println!("\tp_filesz({}),\tp_offset({})", header.p_filesz, header.p_offset);
+        //uefi::println!("\tf: range({} => {}) : {}", r.start, r.end, kernel.len());
+        //uefi::println!("\tp_filesz({}),\tp_offset({})", header.p_filesz, header.p_offset);
         unsafe { slice::from_raw_parts(kernel.as_ptr(), r.end - r.start) }
     };
 
@@ -186,9 +192,109 @@ fn prepare_segment(kernel: &'_ Box<[u8]>, header: &'_ ProgramHeader) -> Result<A
 
 /// Sets the exec bit on for this virtual address
 /// - boot services must be exitted
-pub fn make_executable(page: &Page) -> Result<(), ()> {
+pub fn make_executable(page: &Page) -> Option<PageTableEntry> {
+
+    
+    let virt = VirtAddr::new((page.address.as_ptr() as usize) as u64);
+    
+    let get_index = |idx: i32| -> u64 {
+        assert!(idx < 4 && idx >= 0);
+
+        unsafe { core::hint::assert_unchecked(idx < 4 && idx >= 0) }
+
+        match idx {
+            0 => virt.p1_index().into(),
+            1 => virt.p2_index().into(),
+            2 => virt.p3_index().into(),
+            3 => virt.p4_index().into(),
+            _ => unreachable!(),
+        }
+    };
+
+    //crate::println!("virt: {virt:?}");
+
+    //  get address to the PML4 table
+    let mut table = unsafe {
+        let ptr: u64;
+        asm!(
+            "mov {}, cr3",
+            out(reg) ptr,
+            options(nomem, nostack, preserves_flags)
+        );
+        NonNull::new_unchecked(ptr as *mut PageTable).as_mut()
+    };
+
+    for level in (1..4).rev() {
+
+        let index = get_index(level);
+
+        //crate::println!("\tlevel {level}: index = {index}");
+
+        let mut entry = match table.iter_mut().nth(index as usize) {
+            Some(e) => e,
+            None => {
+                crate::println!("failed to index page table with {index}");
+                panic!();
+            }
+        };
+
+        if entry.flags().bits() & PageTableFlags::HUGE_PAGE.bits() != 0 {
+            //crate::println!("\t{entry:?}");
+            //crate::println!("\t\tbits disabled: {entry:?}");
+            disable_bits(entry);
+            return Some(entry.clone())
+        }
+
+        if entry.addr().is_null() {
+            crate::println!("page address is null");
+            panic!();
+        }
+
+        table = unsafe { ((entry.addr().as_u64() as usize) as *mut PageTable).as_mut().unwrap() };
+    }
+
+    //crate::println!("disabling single page bits");
+    disable_bits(table.iter_mut().nth(get_index(0) as usize).unwrap());
+
+    //crate::println!("done");
+
+    return None;
+
+    /// Disables `NO_EXECUTE` and `WRITEABLE` bits
+    fn disable_bits(entry: &mut PageTableEntry) {
+        //entry.set_flags(entry.flags().difference(PageTableFlags::NO_EXECUTE.bitor(PageTableFlags::WRITABLE)));
+        entry.flags().remove(PageTableFlags::NO_EXECUTE);
+        entry.flags().remove(PageTableFlags::WRITABLE);
+    }
+
+}
+
+#[repr(C, packed)]
+pub struct PageEntry { inner: u64 }
+
+impl PageEntry {
+
+    /// The present bit: the page is in memory
+    pub const PRESENT: u64 = 0b1;
+    /// Writing into the page is allowed
+    pub const WRITE: u64 = 0b10;
+
+    pub const unsafe fn new(value: u64) -> Self {
+        Self { inner: value }
+    }
+
+    /// Checks if all bits are set
+    pub fn check_bits(&self, bits: u64) -> bool { self.inner & bits == bits }
+
+    /// Indicates whether the page is in memory
+    #[inline]
+    pub fn present(&self) -> bool { self.check_bits(Self::PRESENT) }
+
+    /// Writing into the page is allowed
+    #[inline]
+    pub fn write(&self) -> bool { self.inner & Self::WRITE == Self::WRITE }
+
+    
 
 
-
-    todo!();
 }
