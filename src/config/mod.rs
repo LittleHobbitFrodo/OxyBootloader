@@ -86,7 +86,7 @@ impl core::fmt::Display for ReadError {
 }
 
 
-pub fn read() -> Result<Config, ReadError> {
+pub fn load() -> Result<Config, ReadError> {
 
 
     //  Open the SFS protocol

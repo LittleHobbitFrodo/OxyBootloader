@@ -1,19 +1,21 @@
 use core::{arch::asm, ptr::NonNull};
 
+use allocator_api2::boxed::Box;
 use uefi::{boot::{self, MemoryType, ScopedProtocol, get_handle_for_protocol, open_protocol}, proto::console::gop::{GraphicsOutput, PixelBitmask}};
 use uefi::boot::{OpenProtocolAttributes, OpenProtocolParams};
-use crate::String;
+use crate::kernel::BootInfo;
+//use crate::String;
 
 mod framebuffer;
 pub use framebuffer::*;
 
 
 /// Returns the framebuffer while leaving the gop progotol opened
-pub fn get_framebuffer() -> Result<FrameBuffer, String> {
+pub fn get_framebuffer() -> Result<FrameBuffer, &'static str> {
 
     let handle = match get_handle_for_protocol::<GraphicsOutput>() {
         Ok(h) => h,
-        Err(_) => return Err(String::from("failed to get GOP handle"))
+        Err(_) => return Err("failed to get GOP handle")
     };
 
     let gop_params = OpenProtocolParams {
@@ -22,7 +24,7 @@ pub fn get_framebuffer() -> Result<FrameBuffer, String> {
 
     let mut gop: ScopedProtocol<GraphicsOutput> = match unsafe { open_protocol(gop_params, OpenProtocolAttributes::Exclusive) } {
         Ok(gop) => gop,
-        Err(_) => return Err(String::from("failed to open the GOP protocol"))
+        Err(_) => return Err("failed to open the GOP protocol")
     };
 
     let info = gop.current_mode_info();
@@ -118,7 +120,7 @@ pub fn setup_stack<const STACK_SIZE: usize>() -> Result<NonNull<u8>, ()> {
 }
 
 
-pub fn switch_to_kernel(kernel_entry: extern "C" fn() -> !, stack_top: NonNull<u8>) -> ! {
+pub fn switch_to_kernel(kernel_entry: KernelEntry, stack_top: NonNull<u8>, info: BootInfo) -> ! {
 
 
     //  set stack, disable interrupts
@@ -131,6 +133,14 @@ pub fn switch_to_kernel(kernel_entry: extern "C" fn() -> !, stack_top: NonNull<u
         );
     }
 
-    kernel_entry()
+    let boot_info: *mut BootInfo = {
+        let tmp = Box::new(info);
+        Box::leak(tmp)
+    };
+
+    kernel_entry(boot_info.into());
 
 }
+
+
+pub type KernelEntry = extern "C" fn(*mut BootInfo) -> !;

@@ -21,7 +21,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 spin = "0.10.0"
 toml = "0.9.2"
 uefi = { version="=0.35.0", default-features = false, features = []}
-oxyboot_requests={ path="oxyboot_requests", features = ["bootloader"], version="1.0.0"}
+#oxyboot_requests={ path="oxyboot_requests", features = ["bootloader"], version="1.0.0"}
 #elf_loader = { version = "0.12.0", default-features = false, features = ["rel", "version", "portable-atomic"]}
 goblin = "0.10.3"
 x86_64 = { version="0.15.4", features = ["instructions"], default-features = false}

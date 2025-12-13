@@ -1,19 +1,21 @@
 //! Loads and parses the kernel
 
-use core::ops::BitOr;
 use core::{arch::asm, slice};
 use core::ptr::NonNull;
 
 use crate::config::Config;
+use crate::misc::KernelEntry;
 use allocator_api2::{boxed::Box, vec::Vec};
-use bitflags::{Flags, bitflags};
 use goblin::{elf::{Elf, ProgramHeader}, error::Error};
-use uefi::{CStr16, Status, allocator, boot::{self, AllocateType, MemoryAttribute, MemoryType, allocate_pages}, proto::media::file::{File, FileAttribute, FileInfo, FileMode}};
+use uefi::{CStr16, Status, boot::{self, AllocateType, MemoryType, allocate_pages}, proto::media::file::{File, FileAttribute, FileInfo, FileMode}};
 use x86_64::structures::paging::{PageTable, PageTableFlags};
-use x86_64::structures::paging::page_table::{PageTableEntry, PageTableLevel};
-use crate::{Either, String};
+use x86_64::structures::paging::page_table::PageTableEntry;
+use crate::String;
 
-use x86_64::{VirtAddr, registers::control::Cr3};
+use x86_64::VirtAddr;
+
+mod boot_info;
+pub use boot_info::*;
 
 //use uefi::boot::MemoryDescriptor
 
@@ -75,7 +77,7 @@ pub fn load(config: &Config) -> Result<Box<[u8]>, &'static str> {
 
 
 /// Parses the kernel and allocates memory for it
-pub fn prepare(kernel: Box<[u8]>) -> Result<(Vec<AllocatedPage>, extern "C" fn() -> !), String> {
+pub fn prepare(kernel: Box<[u8]>) -> Result<(Vec<AllocatedPage>, KernelEntry), String> {
 
     let elf = match Elf::parse(kernel.as_ref()) {
         Ok(elf) => elf,
@@ -192,7 +194,7 @@ fn prepare_segment(kernel: &'_ Box<[u8]>, header: &'_ ProgramHeader) -> Result<A
 
 /// Sets the exec bit on for this virtual address
 /// - boot services must be exitted
-pub fn make_executable(page: &Page) -> Option<PageTableEntry> {
+pub fn make_executable(page: &Page) {
 
     
     let virt = VirtAddr::new((page.address.as_ptr() as usize) as u64);
@@ -211,8 +213,6 @@ pub fn make_executable(page: &Page) -> Option<PageTableEntry> {
         }
     };
 
-    //crate::println!("virt: {virt:?}");
-
     //  get address to the PML4 table
     let mut table = unsafe {
         let ptr: u64;
@@ -228,9 +228,7 @@ pub fn make_executable(page: &Page) -> Option<PageTableEntry> {
 
         let index = get_index(level);
 
-        //crate::println!("\tlevel {level}: index = {index}");
-
-        let mut entry = match table.iter_mut().nth(index as usize) {
+        let entry = match table.iter_mut().nth(index as usize) {
             Some(e) => e,
             None => {
                 crate::println!("failed to index page table with {index}");
@@ -239,10 +237,8 @@ pub fn make_executable(page: &Page) -> Option<PageTableEntry> {
         };
 
         if entry.flags().bits() & PageTableFlags::HUGE_PAGE.bits() != 0 {
-            //crate::println!("\t{entry:?}");
-            //crate::println!("\t\tbits disabled: {entry:?}");
             disable_bits(entry);
-            return Some(entry.clone())
+            return
         }
 
         if entry.addr().is_null() {
@@ -253,12 +249,7 @@ pub fn make_executable(page: &Page) -> Option<PageTableEntry> {
         table = unsafe { ((entry.addr().as_u64() as usize) as *mut PageTable).as_mut().unwrap() };
     }
 
-    //crate::println!("disabling single page bits");
     disable_bits(table.iter_mut().nth(get_index(0) as usize).unwrap());
-
-    //crate::println!("done");
-
-    return None;
 
     /// Disables `NO_EXECUTE` and `WRITEABLE` bits
     fn disable_bits(entry: &mut PageTableEntry) {

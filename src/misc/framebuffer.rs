@@ -6,7 +6,7 @@ use core::ptr::NonNull;
 pub const SPACE_BETWEEN_LINES: usize = 2;
 pub const TAB_SIZE: usize = 4;
 
-#[repr(C, align(32))]
+#[repr(C)]
 pub struct FrameBuffer {
     w: u64,
     h: u64,
@@ -21,6 +21,8 @@ pub struct FrameBuffer {
 unsafe impl Send for FrameBuffer {}
 
 impl FrameBuffer {
+
+    pub fn as_mut(&mut self) -> &mut Self { self }
 
     pub const fn new(size: (usize, usize), pixel_fmt: u64, mask: PixelBitmask,
         pointer: NonNull<u8>, pos: (usize, usize)) -> Self {
