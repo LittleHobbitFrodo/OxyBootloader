@@ -1,6 +1,6 @@
 
-use goblin::pe::debug::POGO_SIGNATURE_SIZE;
-use uefi::proto::console::gop::{GraphicsOutput, PixelBitmask};
+use serde::de::IntoDeserializer;
+use uefi::proto::console::gop::PixelBitmask;
 use core::ptr::NonNull;
 
 pub const SPACE_BETWEEN_LINES: usize = 2;
@@ -11,16 +11,20 @@ pub struct FrameBuffer {
     w: u64,
     h: u64,
     pixel_fmt: u64,
-    bit_mask: PixelBitmask,
     pointer: NonNull<u8>,
     pub row: usize,
     pub line: usize,
     pub color: u32,
+    bit_mask: PixelBitmask,
 }
 
 unsafe impl Send for FrameBuffer {}
 
 impl FrameBuffer {
+
+    pub fn width(&self) -> u64 { self.w }
+    pub fn height(&self) -> u64 { self.h }
+    pub fn pointer(&self) -> NonNull<u8> { self.pointer }
 
     pub fn as_mut(&mut self) -> &mut Self { self }
 
@@ -83,6 +87,13 @@ impl FrameBuffer {
                     self.endl();
                 }
             }
+        }
+    }
+
+
+    pub fn print(&mut self, s: &'_ str) {
+        for i in s.as_bytes() {
+            self.render(*i);
         }
     }
 

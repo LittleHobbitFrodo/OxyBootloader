@@ -18,17 +18,17 @@ for i in $args; do
 			exit 1
 		fi
 
-		nasm -f elf64 kernel.asm -o kernel.o
-		if [ "$?" != 0 ]; then
-			echo "failed to compile the kernel"
-			exit 1
-		fi
+		#nasm -f elf64 kernel.asm -o kernel.o
+		#if [ "$?" != 0 ]; then
+		#	echo "failed to compile the kernel"
+		#	exit 1
+		#fi
 
-		x86_64-linux-gnu-ld -o kernel.elf -T kernel-linker.ld kernel.o
-		if [ "$?" != 0 ]; then
-			echo "failed to link the kernel"
-			exit 1
-		fi
+		#x86_64-linux-gnu-ld -o kernel.elf -T kernel-linker.ld kernel.o
+		#if [ "$?" != 0 ]; then
+		#	echo "failed to link the kernel"
+		#	exit 1
+		#fi
 
 		if [ ! -e ./efi-img/EFI/BOOT ]; then
 			mkdir -p efi-img/EFI/BOOT/
@@ -46,11 +46,24 @@ for i in $args; do
 
 
 	;;
+	build-kernel)
+		cd ./kernel/
+		./build.sh
+
+		if [ "$?" != 0 ]; then
+			echo "failed to compile example kernel"
+			exit 1
+		fi
+		cd ..
+	;;
 	run)
 
 		qemu-system-x86_64 \
 		-drive format=raw,file=fat:rw:efi-img/ \
-		-bios /usr/share/OVMF/OVMF_CODE.fd
+		-bios /usr/share/OVMF/OVMF_CODE.fd \
+  		-no-reboot \
+  		-d int,cpu_reset,guest_errors \
+  		-D qemu.log
 
 	;;
 esac

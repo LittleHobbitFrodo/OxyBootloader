@@ -1,25 +1,24 @@
 //! Loads and parses the kernel
 
-use core::{arch::asm, slice};
+use core::fmt::Debug;
+//use core::{arch::asm, slice};
 use core::ptr::NonNull;
 
 use crate::config::Config;
 use crate::misc::KernelEntry;
 use allocator_api2::{boxed::Box, vec::Vec};
-use goblin::{elf::{Elf, ProgramHeader}, error::Error};
-use uefi::{CStr16, Status, boot::{self, AllocateType, MemoryType, allocate_pages}, proto::media::file::{File, FileAttribute, FileInfo, FileMode}};
-use x86_64::structures::paging::{PageTable, PageTableFlags};
-use x86_64::structures::paging::page_table::PageTableEntry;
+use goblin::{elf::Elf, error::Error};
+use uefi::{CStr16, boot::{self, AllocateType, MemoryType, allocate_pages}, proto::media::file::{File, FileAttribute, FileInfo, FileMode}};
+use x86_64::{PhysAddr, VirtAddr, structures::paging::{PageTable, PageTableFlags, PhysFrame}};
 use crate::String;
 
-use x86_64::VirtAddr;
+use goblin::elf::program_header;
+
+//use x86_64::VirtAddr;
 
 mod boot_info;
 pub use boot_info::*;
 
-//use uefi::boot::MemoryDescriptor
-
-//static PLM4: RwLock<>
 
 /// Loads the kernel into `Box`
 pub fn load(config: &Config) -> Result<Box<[u8]>, &'static str> {
@@ -75,9 +74,272 @@ pub fn load(config: &Config) -> Result<Box<[u8]>, &'static str> {
 }
 
 
+pub fn prepare(kernel: Box<[u8]>) -> Result<MetaData, String> {
 
-/// Parses the kernel and allocates memory for it
+    //  let goblin parse the elf file
+    let elf = match Elf::parse(kernel.as_ref()) {
+        Ok(elf) => elf,
+        Err(e) => {
+            let mut msg = String::from("failed to parse kernel: ");
+            match e {
+                Error::BadMagic(_) => {
+                    msg.push_str("bad magic number");
+                }
+                Error::BufferTooShort(_, m) => {
+                    msg.push_str("buffer too short: ");
+                    msg.push_str(m);
+                },
+                Error::IO(_) => {
+                    msg.push_str("unknown IO error");
+                },
+                Error::Malformed(m) => {
+                    msg.push_str("malformed: ");
+                    msg.push_str(m.as_str());
+                },
+                Error::Scroll(_) => msg.push_str("scroll error"),
+                _ => msg.push_str("unknown error"),
+            }
+            return Err(msg)
+        }
+    };
+
+    let mut sections = Vec::new();
+
+    for header in elf.program_headers.iter() {
+
+        if header.p_type != program_header::PT_LOAD {
+            //  not loadable segment
+            continue;
+        }
+
+        let page_count = ((header.p_memsz / 4096) + 1) as usize;
+
+        let copy_size = header.p_filesz as usize;
+        let file_offset = header.p_offset as usize;
+
+        let perms = if header.is_executable() {
+            Permissions::Executable
+        } else if header.is_write() {
+            Permissions::Writeable
+        } else {
+            Permissions::ReadOnly
+        };
+
+        //  allocate pages
+        let pages = match allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, page_count) {
+            Ok(pg) => pg,
+            Err(e) => {
+                use core::fmt::Write;
+                let mut msg = String::new();
+                _ = write!(&mut msg, "{e}");
+                return Err(msg);
+            }
+        };
+
+        let file_ptr = NonNull::new(kernel.as_ptr() as *mut u8).unwrap();
+
+        unsafe {
+            //  copy segment data from the file into the allocated memory
+            pages.copy_from_nonoverlapping(file_ptr.add(file_offset), copy_size);
+
+            //  set any other data to zero
+            pages.add(copy_size).write_bytes(0, (page_count as usize * 4096) - copy_size);
+        }
+
+        sections.push(Section {
+            address: NonNull::new(header.vm_range().start as *mut u8).unwrap(),
+            phys: pages.as_ptr() as usize,
+            page_count,
+            perms: perms
+        });
+
+    }
+
+
+    let entry: KernelEntry = unsafe { core::mem::transmute(elf.entry as usize) };
+    Ok(MetaData { sections, entry})
+
+}
+
+
+pub type Page = [u8; 4096];
+
+
+/// Holds metadata about the kernel loaded
+#[derive(Debug)]
+pub struct MetaData {
+    /// Marks each loaded progrm header
+    pub sections: Vec<Section>,
+    pub entry: KernelEntry
+}
+
+/// Holds data for one kernel section
+pub struct Section {
+    /// Marks the start of the virtual address space
+    pub address: NonNull<u8>,
+    /// Starting address of the physical address space
+    pub phys: usize,
+    /// How many pages does this section take
+    pub page_count: usize,
+    /// Permissions for this section
+    pub perms: Permissions
+}
+
+impl Debug for Section {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Section {{ a: {:p}, phys: {:p}, p_count: {}, {:?} }}",
+            self.address,
+            self.phys as *const u8,
+            self.page_count,
+            self.perms)
+    }
+}
+
+/// Describes MMU permissions for each section of the kernel
+pub enum Permissions {
+    /// Only read permissions (not executable)
+    ReadOnly,
+    /// Read + write permissions
+    Writeable,
+    /// Only readable and executable
+    Executable,
+}
+
+impl Permissions {
+    /// Always sets the `PRESENT` flag on
+    pub fn into_page_flags(&self) -> PageTableFlags {
+        match self {
+            Self::Executable => PageTableFlags::PRESENT,
+            Self::ReadOnly => PageTableFlags::NO_EXECUTE | PageTableFlags::PRESENT,
+            Self::Writeable => PageTableFlags::NO_EXECUTE | PageTableFlags::WRITABLE | PageTableFlags::PRESENT,
+        }
+    }
+}
+
+impl Debug for Permissions {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Executable => write!(f, "r-x"),
+            Self::ReadOnly => write!(f, "r--"),
+            Self::Writeable => write!(f, "rw-"),
+        }
+    }
+}
+
+
+/// Sets up paging for loaded kernel
+/// - returns pointer to the `PML4` table
+/// - no huge pages are used
+pub fn setup_paging(meta: &MetaData) -> Result<NonNull<u8>, &'static str> {
+
+    let mut pml4 = allocate_table()?;
+
+    for section in &meta.sections {
+
+        let perms = section.perms.into_page_flags();
+        let virt = VirtAddr::from_ptr(section.address.as_ptr());
+
+
+        let mut current = unsafe { pml4.as_mut() };
+        
+
+
+        //  pml4 -> pdpt -> pd
+        for level in (1..4).rev() {
+
+            let index = level_index(virt, level);
+            uefi::println!("level {level}: index = {index}");
+
+            let entry = current.iter_mut().nth(index).unwrap();
+
+            if entry.is_unused() {  //  allocate the next level
+                uefi::println!("    allocating new table");
+                let mut table = allocate_table()?;
+                let phys = PhysAddr::new((table.as_ptr() as usize) as u64);
+
+                entry.set_addr(phys, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+
+                current = unsafe { table.as_mut() };
+                continue
+
+            } else {
+                current = match NonNull::new((entry.addr().as_u64() as usize) as *mut PageTable) {
+                    Some(mut c) => unsafe { c.as_mut() },
+                    None => return Err("page entry is null (unexpected)"),
+                };
+            }
+        }
+
+
+        uefi::println!("pt = {:p}", section.address);
+        //  current = pt (last) level
+        let entry = match current.iter_mut().nth(virt.p1_index().into()) {
+            Some(ent) => ent,
+            None => {
+                let index: usize = virt.p1_index().into();
+                uefi::println!("failed to index entry with {index}");
+                panic!();
+            }
+        };
+        //let entry = current.iter_mut().nth(virt.p1_index().into()).unwrap();
+
+        let frame = match PhysFrame::from_start_address(PhysAddr::new((section.address.as_ptr() as usize) as u64)) {
+            Ok(f) => f,
+            Err(_) => return Err("virtual address is not aligned properly"),
+        };
+
+        entry.set_frame(frame, perms);
+
+    }
+
+    uefi::println!("returning");
+
+    
+    return Ok(pml4.cast());
+
+    /// Allocates table and nulls its contents
+    fn allocate_table() -> Result<NonNull<PageTable>, &'static str> {
+        let mut table = match allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1) {
+            Ok(ptr) => ptr,
+            Err(_) => return Err("failed to allocate table"),
+        }.cast::<PageTable>();
+
+        unsafe {
+            table.as_mut().zero();
+        }
+
+        Ok(table)
+    }
+
+    /// Returns index for certain level of pages from given virtual address
+    fn level_index(address: VirtAddr, level: i32) -> usize {
+        match level {
+            3 => address.p4_index().into(),
+            2 => address.p3_index().into(),
+            1 => address.p2_index().into(),
+            0 => address.p1_index().into(),
+            _ => {
+                uefi::println!("level index: index {level} is out of bounds");
+                panic!();
+            }
+        }
+    }
+
+    /*/// Tells if flags are sets
+    fn has_flags(entry: &PageTableEntry, flags: PageTableFlags) -> bool {
+        entry.flags().intersection(flags).bits() != 0
+    }*/
+
+}
+
+
+
+
+
+/*/// Parses the kernel and allocates memory for it
 pub fn prepare(kernel: Box<[u8]>) -> Result<(Vec<AllocatedPage>, KernelEntry), String> {
+
+
 
     let elf = match Elf::parse(kernel.as_ref()) {
         Ok(elf) => elf,
@@ -147,11 +409,12 @@ pub struct Page {
 /// Allocates pages on correct location in memory and returns the `AllocatedPage` enum indicating if the memory has to be marked as executable manually
 fn prepare_segment(kernel: &'_ Box<[u8]>, header: &'_ ProgramHeader) -> Result<AllocatedPage, String> {
 
+    uefi::println!("header p_paddr: {:p}", header.p_paddr as *const u8);
     let range = header.vm_range();
     let count = ((range.end - range.start) as usize / 4096) + 1;
 
     //let ptr = match allocate_pages(boot::AllocateType::Address(range.start as u64), MemoryType::LOADER_DATA, count) {
-    let ptr = match allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, count) {
+    let ptr = match allocate_pages(AllocateType::Address(header.p_paddr), MemoryType::LOADER_DATA, count) {
         Ok(ptr) => ptr,
         Err(e) => {
             const OUT_OF_RESOURCES: usize = Status::OUT_OF_RESOURCES.0;
@@ -171,6 +434,8 @@ fn prepare_segment(kernel: &'_ Box<[u8]>, header: &'_ ProgramHeader) -> Result<A
         }
     };
 
+    uefi::print!("\tpage {ptr:p} ");
+
     let frange = {
         let r = header.file_range();
         //uefi::println!("\tf: range({} => {}) : {}", r.start, r.end, kernel.len());
@@ -183,8 +448,10 @@ fn prepare_segment(kernel: &'_ Box<[u8]>, header: &'_ ProgramHeader) -> Result<A
     }
 
     if header.is_executable() {
+        uefi::println!("is executable");
         Ok(AllocatedPage::Executable(Page { address: ptr, count }))
     } else {
+        uefi::println!("is reqular");
         Ok(AllocatedPage::Regular(Page { address: ptr, count }))
     }
     
@@ -258,34 +525,4 @@ pub fn make_executable(page: &Page) {
         entry.flags().remove(PageTableFlags::WRITABLE);
     }
 
-}
-
-#[repr(C, packed)]
-pub struct PageEntry { inner: u64 }
-
-impl PageEntry {
-
-    /// The present bit: the page is in memory
-    pub const PRESENT: u64 = 0b1;
-    /// Writing into the page is allowed
-    pub const WRITE: u64 = 0b10;
-
-    pub const unsafe fn new(value: u64) -> Self {
-        Self { inner: value }
-    }
-
-    /// Checks if all bits are set
-    pub fn check_bits(&self, bits: u64) -> bool { self.inner & bits == bits }
-
-    /// Indicates whether the page is in memory
-    #[inline]
-    pub fn present(&self) -> bool { self.check_bits(Self::PRESENT) }
-
-    /// Writing into the page is allowed
-    #[inline]
-    pub fn write(&self) -> bool { self.inner & Self::WRITE == Self::WRITE }
-
-    
-
-
-}
+}*/

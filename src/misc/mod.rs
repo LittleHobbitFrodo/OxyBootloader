@@ -90,13 +90,13 @@ macro_rules! print {
 /// syntax: `println!(framebuffer: "text")`
 #[macro_export]
 macro_rules! println {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        let _ = writeln!(crate::FRAMEBUFFER.lock(), $($arg)*);
-    }};
     ($fb:ident: $($arg:tt)*) => {{
         use core::fmt::Write;
         let _ = writeln!($fb, $($arg)*);
+    }};
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let _ = writeln!(crate::FRAMEBUFFER.lock(), $($arg)*);
     }};
 }
 
@@ -104,7 +104,7 @@ pub fn uefi_cursor_position() -> (usize, usize) {
     uefi::system::with_stdout(|x| x.cursor_position() )
 }
 
-/// Allocates memory for kernel stack
+/*/// Allocates memory for kernel stack
 /// - returned pointer is already pointing at the start of the stack (highest address)
 /// - given generic argument is in kilobytes
 pub fn setup_stack<const STACK_SIZE: usize>() -> Result<NonNull<u8>, ()> {
@@ -117,30 +117,67 @@ pub fn setup_stack<const STACK_SIZE: usize>() -> Result<NonNull<u8>, ()> {
     };
 
     unsafe { Ok(stack.add(real_size)) }
-}
+}*/
 
 
-pub fn switch_to_kernel(kernel_entry: KernelEntry, stack_top: NonNull<u8>, info: BootInfo) -> ! {
+#[deprecated]
+pub fn switch_to_kernel(kernel_entry: KernelEntry, stack_top: NonNull<u8>, boot_info: *mut BootInfo) -> ! {
 
+    unsafe { boot_info.as_mut().unwrap() }.framebuffer.print("calling the asm routine");
 
-    //  set stack, disable interrupts
     unsafe {
-        asm!("cli");
-        asm!(
-            "mov rsp, {}",
-            in(reg) stack_top.as_ptr(),
-            options(nostack)
+        asm!(r#"
+            cli
+            xor rbp, rbp
+            mov rsp, {stack}
+            mov rdi, {info}
+            jmp {entry}
+            "#,
+            stack = in(reg) stack_top.as_ptr(),
+            info = in(reg) boot_info,
+            entry = in(reg) kernel_entry
         );
     }
 
-    let boot_info: *mut BootInfo = {
-        let tmp = Box::new(info);
-        Box::leak(tmp)
-    };
+    //kernel_entry(boot_info);
 
-    kernel_entry(boot_info.into());
+    //  set stack, disable interrupts
+    /*unsafe {
 
+        core::arch::asm!(
+            // Disable interrupts
+            "cli",
+
+            // Set stack
+            "mov rsp, {stack}",
+
+            // Align stack for SysV ABI
+            "and rsp, -16",
+            "sub rsp, 8",
+
+            // First argument: RDI
+            "mov rdi, {boot_info}",
+
+            // Jump to kernel (no return!)
+            "jmp {entry}",
+
+            stack = in(reg) stack_top.as_ptr(),
+            boot_info = in(reg) boot_info,
+            entry = in(reg) kernel_entry,
+
+            options(noreturn)
+        );
+    }*/
+
+    hang()
 }
 
+pub fn hang() -> ! {
+    unsafe {
+        loop {
+            core::arch::asm!("hlt");
+        }
+    }
+}
 
 pub type KernelEntry = extern "C" fn(*mut BootInfo) -> !;
