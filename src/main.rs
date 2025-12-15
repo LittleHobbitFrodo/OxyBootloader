@@ -13,14 +13,14 @@ pub mod misc;
 pub use prelude::*;
 //use serde::de::IntoDeserializer;
 //use uefi::mem::memory_map::MemoryMapMut;
-use misc::FrameBuffer;
+//use misc::FrameBuffer;
 
-use crate::kernel::BootInfo;
+use crate::{kernel::BootInfo};
 
 //use crate::{kernel::BootInfo, misc::hang};
 
 
-pub static FRAMEBUFFER: Mutex<FrameBuffer> = Mutex::new(FrameBuffer::empty());
+//pub static FRAMEBUFFER: Mutex<FrameBuffer> = Mutex::new(FrameBuffer::empty());
 
 
 //  TODO: rewrite the config module
@@ -39,6 +39,16 @@ fn main() -> Status {
         },
     };
 
+    uefi::println!("config loaded");
+
+    let mut boot_info = match BootInfo::collect() {
+        Ok(bi) => bi,
+        Err(msg) => {
+            uefi::println!("failed to get bootinfo{msg}");
+            panic!()
+        }
+    };
+
 
     let kernel = match kernel::load(&config) {
         Ok(slice) => slice,
@@ -54,7 +64,9 @@ fn main() -> Status {
         }
     };
 
-    let pml4 = match kernel::setup_paging(&metadata) {
+    uefi::println!("kernel prepared");
+
+    let pml4 = match kernel::setup_paging(&metadata, &mut boot_info) {
         Ok(p) => p,
         Err(e) => {
             uefi::println!("failed to setup paging: {e}");
@@ -62,17 +74,10 @@ fn main() -> Status {
         }
     };
 
-    uefi::println!("pml4: {pml4:p}");
-
-    /*let boot_info = match BootInfo::collect() {
-        Ok(bi) => bi,
-        Err(msg) => {
-            uefi::println!("{msg}");
-            panic!()
-        }
-    };*/
+    uefi::println!("paging set");
 
     
+    kernel::switch_to_kernel(metadata, boot_info);
 
     uefi::println!("DONE");
     boot::stall(1_000_000_000);

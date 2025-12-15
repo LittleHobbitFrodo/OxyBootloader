@@ -7,15 +7,17 @@ pub const SPACE_BETWEEN_LINES: usize = 2;
 pub const TAB_SIZE: usize = 4;
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct FrameBuffer {
     w: u64,
     h: u64,
-    pixel_fmt: u64,
     pointer: NonNull<u8>,
+    pixel_fmt: u64,
     pub row: usize,
     pub line: usize,
     pub color: u32,
     bit_mask: PixelBitmask,
+    byte_size: usize,
 }
 
 unsafe impl Send for FrameBuffer {}
@@ -25,14 +27,16 @@ impl FrameBuffer {
     pub fn width(&self) -> u64 { self.w }
     pub fn height(&self) -> u64 { self.h }
     pub fn pointer(&self) -> NonNull<u8> { self.pointer }
+    /// Returns size of the framebuffer in bytes
+    pub fn size(&self) -> usize { self.byte_size }
 
     pub fn as_mut(&mut self) -> &mut Self { self }
 
     pub const fn new(size: (usize, usize), pixel_fmt: u64, mask: PixelBitmask,
-        pointer: NonNull<u8>, pos: (usize, usize)) -> Self {
+        pointer: NonNull<u8>, pos: (usize, usize), byte_size: usize) -> Self {
         Self {
             w: size.0 as u64, h: size.1 as u64, pixel_fmt, bit_mask: mask,
-            pointer, row: pos.0, line: pos.1, color: 0xffffff
+            pointer, row: pos.0, line: pos.1, color: 0xffffff, byte_size
         }
     }
 
@@ -41,7 +45,7 @@ impl FrameBuffer {
             w: 0, h: 0, pixel_fmt: 0,
             bit_mask: PixelBitmask { red: 0, green: 8, blue: 16, reserved: 24 },
             pointer: NonNull::dangling(),
-            row: 0, line: 0, color: 0xffffff,
+            row: 0, line: 0, color: 0xffffff, byte_size: 0
         }
     }
 

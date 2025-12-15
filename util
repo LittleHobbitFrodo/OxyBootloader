@@ -61,7 +61,6 @@ for i in $args; do
 		qemu-system-x86_64 \
 		-drive format=raw,file=fat:rw:efi-img/ \
 		-bios /usr/share/OVMF/OVMF_CODE.fd \
-  		-no-reboot \
   		-d int,cpu_reset,guest_errors \
   		-D qemu.log
 
