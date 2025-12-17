@@ -1,7 +1,6 @@
-use core::{arch::asm, ptr::NonNull};
+use core::ptr::NonNull;
 
-use allocator_api2::boxed::Box;
-use uefi::{boot::{self, MemoryType, ScopedProtocol, get_handle_for_protocol, open_protocol}, proto::console::gop::{GraphicsOutput, PixelBitmask, PixelFormat}};
+use uefi::{boot::{self, ScopedProtocol, get_handle_for_protocol, open_protocol}, proto::console::gop::{GraphicsOutput, PixelBitmask, PixelFormat}};
 use uefi::boot::{OpenProtocolAttributes, OpenProtocolParams};
 use crate::kernel::BootInfo;
 //use crate::String;

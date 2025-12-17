@@ -1,15 +1,15 @@
 //! Loads and parses the kernel
 
-use core::fmt::Debug;
+use core::{fmt::Debug, time::Duration};
 use core::arch::asm;
 use core::ptr::NonNull;
 
-use crate::config::Config;
+use crate::KERNEL_PATH;
 use crate::misc::KernelEntry;
 use allocator_api2::{boxed::Box, vec::Vec};
 use goblin::{elf::Elf, error::Error};
 use uefi::{CStr16, boot::{self, AllocateType, MemoryType, allocate_pages, exit_boot_services}, proto::media::file::{File, FileAttribute, FileInfo, FileMode}};
-use x86_64::{PhysAddr, VirtAddr, registers::control::{Cr0, Cr0Flags, Cr3}, structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, mapper}};
+use x86_64::{PhysAddr, VirtAddr, registers::control::{Cr0, Cr0Flags}, structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB}};
 use crate::String;
 
 use goblin::elf::program_header;
@@ -21,12 +21,7 @@ pub use boot_info::*;
 
 
 /// Loads the kernel into `Box`
-pub fn load(config: &Config) -> Result<Box<[u8]>, &'static str> {
-
-    let kernel_path = match config.kernel_path() {
-        Some(path) => path,
-        None => return Err("no path to the kernel".into())
-    };
+pub fn load() -> Result<Box<[u8]>, &'static str> {
 
     let mut sfs = match boot::get_image_file_system(boot::image_handle()) {
         Ok(sfs) => sfs,
@@ -40,7 +35,7 @@ pub fn load(config: &Config) -> Result<Box<[u8]>, &'static str> {
 
     let mut name_buf = [0u16; 256];
 
-    let filename = match CStr16::from_str_with_buf(kernel_path.as_str().trim_end_matches('\0'), &mut name_buf) {
+    let filename = match CStr16::from_str_with_buf(KERNEL_PATH.trim_end_matches('\0'), &mut name_buf) {
         Ok(name) => name,
         Err(_) => return Err("failed to convert string into UTF16"),
     };
@@ -74,6 +69,7 @@ pub fn load(config: &Config) -> Result<Box<[u8]>, &'static str> {
 }
 
 
+/// copies the data from the loaded ELF file, returns metadata for the `kernel::setup_paging()` function
 pub fn prepare(kernel: Box<[u8]>) -> Result<MetaData, String> {
 
     //  let goblin parse the elf file
@@ -111,6 +107,8 @@ pub fn prepare(kernel: Box<[u8]>) -> Result<MetaData, String> {
             //  not loadable segment
             continue;
         }
+
+        uefi::println!("preparing section {:p}", (header.p_vaddr as usize) as *const u8);
 
         let page_count = ((header.p_memsz / 4096) + 1) as usize;
 
@@ -227,7 +225,7 @@ impl Debug for Permissions {
 }
 
 
-#[repr(transparent)]
+/*#[repr(transparent)]
 pub struct Pml4 {
     physical: NonNull<u8>
 }
@@ -236,10 +234,12 @@ impl core::fmt::Pointer for Pml4 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:p}", self.physical)
     }
-}
+}*/
 
+/// Covers the prepared kernel in virtual address space
 pub fn setup_paging(meta: &MetaData, info: &BootInfo) -> Result<(), &'static str> {
 
+    //  makes it possible to write into write-protected PML4 table
     unsafe { Cr0::update(|flags| flags.remove(Cr0Flags::WRITE_PROTECT)); }
 
     let mut pml4 = unsafe {
@@ -312,44 +312,30 @@ pub unsafe fn map_kernel_section(mapper: &mut OffsetPageTable, section: &Section
 
 
 
-/// Performs context switch and pointer to the boot into to the kernel
-/// - collects `BootInfo` and exits boot services
-pub fn switch_to_kernel(kernel_meta: MetaData, info: BootInfo/*, pml4: Pml4*/) {
-    let fb_ptr = info.framebuffer.pointer();
-
-    //let stack = info.stack_top().as_ptr();
+/// Performs context switch to the kernel while giving it its own stack memory
+/// - exits boot services
+pub fn switch_to_kernel(kernel_meta: MetaData, info: BootInfo) -> ! {
+    let stack = info.stack_top().as_ptr();
     let boot_info = Box::leak(Box::new(info)).as_ptr() as *mut BootInfo;
 
-    uefi::println!("switching to kernel");
-    uefi::println!("fb ptr: {fb_ptr:p}", );
-    uefi::println!("entry: {:p}", kernel_meta.entry);
+    _ = uefi::system::with_stdout(|x| x.clear() );
 
-    for _ in 0..100 {
-        uefi::print!(" ");
-    }
-    
-    //let _ = unsafe { exit_boot_services(None) };
+    let _ = unsafe { exit_boot_services(None) };
 
     unsafe {
-        asm!(/*r#"
-            cli
-            mov rdi, {info}
-            xor rbp, rbp
-            mov rsp, {stack}
-            mov cr3, {pml4}
-            push 0
-            jmp {entry}
-            "#,*/
+        asm!(
             r#"
             cli
             mov rdi, {info}
+            mov rsp, {stack}
+            xor rbp, rbp
             call {entry}"#,
             entry = in(reg) kernel_meta.entry,
             info = in(reg) boot_info,
-            //pml4 = in(reg) pml4.physical.as_ptr(),
-            //stack = in(reg) stack
+            stack = in(reg) stack
         );
     }
 
+    unreachable!();
 
 }

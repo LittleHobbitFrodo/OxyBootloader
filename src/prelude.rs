@@ -1,8 +1,5 @@
 pub use uefi::prelude::*;
 
-pub use crate::fs::*;
-
-
 pub use uefi::print;
 pub use uefi::println;
 
@@ -11,12 +8,9 @@ pub extern crate bitflags;
 pub extern crate spin;
 pub extern crate toml;
 pub extern crate serde;
-//pub extern crate elf_loader;
 extern crate alloc;
 
 pub use alloc::string::String;
-
-//pub use elf_loader as elf;
 
 pub use bitflags::*;
 pub use spin::Mutex;

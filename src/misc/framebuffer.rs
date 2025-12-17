@@ -1,11 +1,13 @@
 
-use serde::de::IntoDeserializer;
 use uefi::proto::console::gop::PixelBitmask;
 use core::ptr::NonNull;
 
 pub const SPACE_BETWEEN_LINES: usize = 2;
 pub const TAB_SIZE: usize = 4;
 
+
+/// Custom holder for the MMIO framebuffer (the display)
+/// - Supports printing using its own little font
 #[repr(C)]
 #[derive(Debug)]
 pub struct FrameBuffer {
@@ -24,14 +26,18 @@ unsafe impl Send for FrameBuffer {}
 
 impl FrameBuffer {
 
+    /// Returns width of the framebuffer in pixels
     pub fn width(&self) -> u64 { self.w }
+    /// Returns height of the framebuffer in pixels
     pub fn height(&self) -> u64 { self.h }
+    /// Returns base pointer to the framebuffer MMIO region
     pub fn pointer(&self) -> NonNull<u8> { self.pointer }
     /// Returns size of the framebuffer in bytes
     pub fn size(&self) -> usize { self.byte_size }
 
     pub fn as_mut(&mut self) -> &mut Self { self }
 
+    
     pub const fn new(size: (usize, usize), pixel_fmt: u64, mask: PixelBitmask,
         pointer: NonNull<u8>, pos: (usize, usize), byte_size: usize) -> Self {
         Self {
@@ -57,7 +63,7 @@ impl FrameBuffer {
         }
     }
 
-
+    /// Renders an character
     pub fn render(&mut self, c: u8) {
         match c {
             0..31 => {
@@ -94,7 +100,7 @@ impl FrameBuffer {
         }
     }
 
-
+    /// Prints string
     pub fn print(&mut self, s: &'_ str) {
         for i in s.as_bytes() {
             self.render(*i);

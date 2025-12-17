@@ -49,6 +49,8 @@ impl BootInfo {
             }
         };
 
+        uefi::println!("fb: {} x {}", fb.width(), fb.height());
+
         //uefi::println!("got framebuffer");
 
         Ok(Self {
@@ -62,11 +64,4 @@ impl BootInfo {
     pub fn stack_top(&self) -> NonNull<u8> {
         unsafe { self.stack_bottom.add(self.stack_size) }
     }
-
-    /*/// Prepares the boot info for passing to the kernel (by moving out inner value of the `FRAMEBUFFER` static)
-    /// - You are no longer able to use the `crate::print!()` macro after calling this function
-    pub fn prepare(&mut self) {
-        self.framebuffer = core::mem::replace(FRAMEBUFFER.lock().as_mut(), FrameBuffer::empty());
-    }*/
-
 }
