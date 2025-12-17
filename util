@@ -18,18 +18,6 @@ for i in $args; do
 			exit 1
 		fi
 
-		#nasm -f elf64 kernel.asm -o kernel.o
-		#if [ "$?" != 0 ]; then
-		#	echo "failed to compile the kernel"
-		#	exit 1
-		#fi
-
-		#x86_64-linux-gnu-ld -o kernel.elf -T kernel-linker.ld kernel.o
-		#if [ "$?" != 0 ]; then
-		#	echo "failed to link the kernel"
-		#	exit 1
-		#fi
-
 		if [ ! -e ./efi-img/EFI/BOOT ]; then
 			mkdir -p efi-img/EFI/BOOT/
 		fi
@@ -42,7 +30,7 @@ for i in $args; do
 
 		#	copy kernel executable
 
-		cp ./kernel.elf ./efi-img/oxy/kernel.elf
+		cp ./kernel/kernel.elf ./efi-img/oxy/kernel.elf
 
 
 	;;
