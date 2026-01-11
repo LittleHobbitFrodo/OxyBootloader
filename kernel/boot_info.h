@@ -20,7 +20,7 @@ struct PixelBitmask {
 struct OxyBootFrameBuffer {
     u64 w;
     u64 h;
-    volatile u32* pointer;
+    u32* volatile pointer;
     u64 pixel_fmt;
     usize row;
     usize line;
