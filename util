@@ -8,6 +8,7 @@ for i in $args; do
 
 	case "$i" in
 		build)
+			#	bootloader compilation
 
 		echo building OxyBoot
 
@@ -18,6 +19,8 @@ for i in $args; do
 			exit 1
 		fi
 
+		#	creating the UEFI syspart structure
+
 		if [ ! -e ./efi-img/EFI/BOOT ]; then
 			mkdir -p efi-img/EFI/BOOT/
 		fi
@@ -25,16 +28,16 @@ for i in $args; do
 		cp ./target/x86_64-unknown-uefi/release/OxyBoot.efi ./efi-img/EFI/BOOT/BOOTX64.EFI
 
 		#	add bootloader configuration
-		mkdir -p efi-img/oxy/
-		cp ./oxyboot.toml ./efi-img/oxy/
+		#mkdir -p efi-img/oxy/
+		#cp ./oxyboot.toml ./efi-img/oxy/
 
 		#	copy kernel executable
-
 		cp ./kernel/kernel.elf ./efi-img/oxy/kernel.elf
 
 
 	;;
 	build-kernel)
+		#	compile the kernel
 		cd ./kernel/
 		./build.sh
 
@@ -48,9 +51,9 @@ for i in $args; do
 
 		qemu-system-x86_64 \
 		-drive format=raw,file=fat:rw:efi-img/ \
-		-bios /usr/share/OVMF/OVMF_CODE.fd \
-  		-d int,cpu_reset,guest_errors \
-  		-D qemu.log
+		-bios /usr/share/OVMF/OVMF_CODE.fd
+  		# -d int,cpu_reset,guest_errors \	#	event logs
+  		# -D qemu.log
 
 	;;
 esac

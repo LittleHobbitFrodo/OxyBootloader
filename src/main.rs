@@ -1,8 +1,8 @@
 #![no_main]
 #![no_std]
 
-
 use core::time::Duration;
+use uefi::{boot::{MemoryType, memory_map}, mem::memory_map::MemoryMap};
 pub use uefi::{self, entry, Status, print, println};
 mod prelude;
 pub mod kernel;
@@ -16,7 +16,13 @@ use crate::{kernel::BootInfo};
 #[entry]
 fn main() -> Status {
 
-    uefi::helpers::init().unwrap();
+
+    println!("Hello world!");
+
+    boot::stall(100_000_000);
+
+
+    uefi::helpers::init().expect("failed to initialize helpers");
 
     let mut boot_info = match BootInfo::collect() {
         Ok(bi) => bi,
