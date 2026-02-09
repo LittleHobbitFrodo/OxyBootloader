@@ -153,9 +153,9 @@ Most emulators (including Qemu) can emulate only legacy BIOS by default. However
 First we need to tell Qemu where to find the UEFI system partition and how to treat it as disk. This is what the `-drive` switch is for. Typical boot drive configuration can look like this: `-drive format=raw,file=fat:rw:efi-img/`. But what does it do?
 
 - `format=raw` makes the drive exposed as raw bytes-to-bytes hard drive.
-- `file=fat:rw:path/to/UEFI-syspart/` use the drive/partition as FAT-32 formatted
-  - `rw` allow reading and writing, just `r` will do for our usecase
-  - `path/to/UEFI-syspart/` path to the [UEFI system partition structure](#creating-uefi-system-partition)
+- `file=fat:rw:path/to/UEFI-syspart/` use the drive/partition as FAT-32 formatted.
+  - `rw` allow reading and writing, just `r` will do for our usecase.
+  - `path/to/UEFI-syspart/` path to the [UEFI system partition structure](#creating-uefi-system-partition).
 
 
 Now we need to tell Qemu where to find the firmware. We can use the `-bios` switch: `-bios path/to/OVMF_CODE.fd`.
@@ -168,6 +168,71 @@ After running, a window will appear:
 
 ## Example kernel in assembly
 
+In order to work on the bootloader, we need something to load. In this chapter, we will create a primitive kernel — a few lines of assembly.
+
+### Assembly routine
+
+The whole "kernel" can be described in this code:
+```
+extern _start
+
+_start:
+cli
+loop:
+hlt
+jmp loop
+```
+
+The whole code does exactly this:
+1. `extern _start`: Creates `_start` symbol reference and leaves its resolution to the linker.
+    - Makes it visible to our bootloader.
+2. `cli` (**CL**ear **I**nterrupt): This instruction disables interrupts by setting a bit in one of the control registers.
+    - You can find more on the [OSDev Wiki](https://wiki.osdev.org/Interrupts)
+3. `hlt`: Disables execution of code until interrupt occur
+    - Interrupts are disabled, so the execution shall not continue from here.
+4. `jmp loop`: Just a safeguard to prevent uninitialized memory from being executed.
+
+
+### Compiling and Linking
+
+#### Theory
+
+In order to compile the kernel, we must first create an object file and then link it. An object file is a partially compiled program. It contains part of the machine code and references to other functions/symbols, which are resolved by the linker.
+
+To link the files together, we need a special linker script. The linker script does not contain any logic; it is more like a map that tells the linker where each section of memory is located in the final executable file.
+
+Since the kernel does not use any data, our linker script can be very simple:
+```ld
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 0xFFFFFFFF80000000;
+    .text : { *(.text*) }
+}
+```
+
+Before I explain what the linking script actually does, I should tell you something about sections. In a nutshell, of course!
+
+Sections are essentially parts of your program. Each section can store data or executable code and has its own set of permissions that are enforced by the processor. Typical sections are:
+- `.text`: Stores the executable code.
+- `.data`: Stores variables and statically allocated memory.
+- `.rodata`: Read-only data, constants.
+
+Now back to the linker script: what does the script actually do?
+- `ENTRY(_start)` sets the `_start` function as the program's entry point.
+- `. = 0xFFFFFFFF80000000;`: This tells the linker to place the start of the executable at virtual address `0xFFFFFFFF80000000`. This is important, because most kernels use the higher half of the virtual address space.
+  - For more information, see the [OSDev wiki](https://wiki.osdev.org/Higher_Half_x86_Bare_Bones).
+- `.text : { *(.text*) }`: This tells the compiler that the `.text` section (executable code) should be placed as the first section. Thus on address `0xFFFFFFFF80000000`.
+
+
+#### Compilation
+
+To compile the kernel, we need the `nasm` assembler and any linker capable of linking freestanding binary for the x86_64 architecture. Pesonally, I prefer the `x86_64-linux-gnu-ld`, although better options may be available.
+
+1. Create Object file by running `nasm -f elf64 kernel.asm -o kernel.o`
+2. Link it with the linker script: `x86_64-linux-gnu-ld -o kernel.elf kernel.o -T linker.ld`
+    - Do not forget to use your linker script with the `-T` switch!
 
 ## Loading the kernel
 
