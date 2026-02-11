@@ -17,7 +17,16 @@
     2. [Creating UEFI system partition](#creating-uefi-system-partition)
     3. [Emulator and OVMF](#emulator-and-ovmf)
 5. [Example kernel in assembly](#example-kernel-in-assembly)
+    1. [Assembly routine](#assembly-routine)
+    2. [Linking](#linking)
+    3. [Compilation](#compilation-1)
 6. [Loading the kernel](#loading-the-kernel)
+    1. [Protocols and handles](#protocols-and-handles)
+    2. [Loading the kernel](#loading-the-kernel-1)
+        1. [Opening the root directory](#opening-the-root-directory)
+        2. [Path to the kernel](#path-to-the-kernel)
+        3. [Obtaining information about the file](#obtaining-information-about-the-file)
+        4. [Reading the file](#reading-the-file)
 7. [Paging and the x86_64 crate](#paging-and-the-x86_64-crate)
 8. [Parsing the ELF using goblin](#parsing-the-elf-using-goblin)
 9. [Gathering boot info](#gathering-boot-info)
@@ -28,7 +37,7 @@
 
 ## About the guide
 
-> **PLEASE READ**: Most examples (including creating an EFI system partition) are performed on a **LINUX SYSTEM**. More specifically, on Fedora 43
+> **PLEASE READ**: Most example routines are performed on a **LINUX SYSTEM** (Fedora 43).
 
 This text is not a complete manual, but rather a guide describing the development of a very simple bootloader for the x86_64 bootloader. It covers most of what a bootloader needs to do to start the kernel.
 
@@ -190,12 +199,10 @@ The whole code does exactly this:
     - You can find more on the [OSDev Wiki](https://wiki.osdev.org/Interrupts)
 3. `hlt`: Disables execution of code until interrupt occur
     - Interrupts are disabled, so the execution shall not continue from here.
-4. `jmp loop`: Just a safeguard to prevent uninitialized memory from being executed.
+4. `jmp loop`: Just a safeguard to prevent uninitialized memory from being executed by creating infinite loop.
 
 
-### Compiling and Linking
-
-#### Theory
+### Linking
 
 In order to compile the kernel, we must first create an object file and then link it. An object file is a partially compiled program. It contains part of the machine code and references to other functions/symbols, which are resolved by the linker.
 
@@ -225,8 +232,7 @@ Now back to the linker script: what does the script actually do?
   - For more information, see the [OSDev wiki](https://wiki.osdev.org/Higher_Half_x86_Bare_Bones).
 - `.text : { *(.text*) }`: This tells the compiler that the `.text` section (executable code) should be placed as the first section. Thus on address `0xFFFFFFFF80000000`.
 
-
-#### Compilation
+### Compilation
 
 To compile the kernel, we need the `nasm` assembler and any linker capable of linking freestanding binary for the x86_64 architecture. Pesonally, I prefer the `x86_64-linux-gnu-ld`, although better options may be available.
 
@@ -236,7 +242,105 @@ To compile the kernel, we need the `nasm` assembler and any linker capable of li
 
 ## Loading the kernel
 
+Reading files is not an easy process when you don't have any OS to support you. But perhaps it's not that difficult when you have UEFI instead of a regular operating system...
+
+### Protocols and handles
+
+Almost every action done using UEFI needs some protocols. Let's take a look at them!
+
+UEFI provides access to a set of protocols and their handles. Handles usually represent some kind of resource, whether it be a disk, screen, or something else. Each handle serves as a gateway to an associated protocol.
+
+On the other hand, protocols are raw interfaces to associated resources, usually consisting of a list of functions that are called.
+
+The uefi crate wraps all these handles as structures, ensuring Rust's safety guarantees and keeping you safe from low-level issues.
+
+### Loading the kernel
+
+#### Opening the root directory
+
+To load the kernel (or any other file), we need to get the `SimpleFileSystem` protocol and open its root directory, where we can then locate the file.
+
+The `SimpleFileSystem` protocol is opened by calling the `uefi::boot::get_image_file_system()` function, which we pass the UEFI system partition descriptor to by calling the `uefi::boot::image_handle()` function.
+
+Once we have obtained the SFS protocol, we can open its root directory. We do this by calling the `open_volume()` function on the `SimpleFileSystem` protocol we obtained in the previous step.
+
+The simplified final code looks like this:
+```rust
+let mut sfs = uefi::boot::get_image_file_system(uefi::boot::image_handle())
+    .expect("failed to open SFS");
+ let root_dir = sfs.open_volume().expect("failed to open root dir");
+```
+
+#### Path to the kernel
+
+UEFI is a standard made for advanced C programs. Therefore all/most paths are UTF16 encoded and null terminated. Wouldn't want to do this stuff in C, would you..
+
+Fortunately, we are rustaceans and we have a convenient way to do this: introducing `CStr16`, UTF16 encoded, null terminated string.
+
+The conversion is simple: First we need to allocate buffer, gool old array on the stack will do. Then we call the `CStr16::from_str_with_buf()` function, which does the conversion.
+
+> **Note**: all paths are also separated by backslash (like on windows).
+
+```rust
+let mut name_buf = [0u16; 256];
+let filename = CStr16::from_str_with_buf("\\oxy\\kernel.elf", &mut name_buf)
+    .expect("failed to convert to UTF16");
+```
+
+#### Obtaining information about the file
+
+The next step is to find out how long the file is. We also need to check wheether the file is actually a regular file or directory. To do this, we need to obtain handle to the file.
+
+We can obtain `FileHandle` by calling the `open()` function on the root directory structure. This function takes the following parameters:
+1. `&Cstr16`: Converted file name.
+2. `FileMode`: Choose between reading and/or writing.
+3. `FileAttributes`: Special functions, such as read-only files or backup files, we want the attributes to be empty.
+
+To check the file type, we simply call the `into_regular_file()` function, which consumes the handle. The function returns `Some()` if the file is a regular file, and `None` if it is a directory.
+
+```rust
+let handle = root_dir.open(filename, FileMode::Read, FileAttribute::empty())
+    .expect("failed to open the kernel");
+let file = handle.into_regular_file().expect("found directory");
+```
+
+Once we have the file opened, we can finally measure the length of the file. In bytes of course. But since we are working with uefi, its not as simple as it could be. We have to get the `FileInfo` structure into preallocated buffer.
+
+As I said, we need to preallocate a buffer in advance (and again) array on the stack will do. Then we need to call `get_info()` function on the regular file handle and pass reference to the buffer.
+> **Note**: The `get_info()` function requires explixit type annotation (`&FileInfo`).
+
+```rust
+let mut info_buf = [0u8; 512];
+let info: &FileInfo = file.get_info(&mut info_buf)
+    .expect("failed to get file info");
+```
+
+Now we can finally find out the length of the file using the `file_size()` function from the returned `FileInfo` structure.
+
+```rust
+let file_size = info.file_size() as usize;
+```
+
+#### Reading the file
+
+Before we can continue analyzing the file, we need to load it into one location and then copy some of its data to a predetermined location. Well, now we have other things to worry about...
+
+When reading a file, we need to allocate buffer in advance. And since we don't know the length of the file at compile time, we can't use the good old stack allocated buffer. However, we can use the `allocator-api2` crate, which is also used by the standard library. `allocator-api2` provides all the useful things, such as `Vec` or `Box`.
+
+The function used to read the file is, as expected, `file.read()`. It takes a mutable reference to the buffer and returns a `Result` indicating whether it failed.
+
+```rust
+let mut loaded: Box<[u8]> = unsafe { Box::new_zeroed_slice(file_size)
+    .assume_init() };
+
+file.read(&mut loaded).expect("failed to load the kernel");
+
+```
+
+
 ## Paging and the x86_64 crate
+
+
 
 ## Parsing the ELF using goblin
 

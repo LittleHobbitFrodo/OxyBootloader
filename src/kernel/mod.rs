@@ -23,11 +23,13 @@ pub use boot_info::*;
 /// Loads the kernel into `Box`
 pub fn load() -> Result<Box<[u8]>, &'static str> {
 
+    //  gets the simple file system protocol
     let mut sfs = match boot::get_image_file_system(boot::image_handle()) {
         Ok(sfs) => sfs,
         Err(_) => return Err("cannot open simple filesystem protocol")
     };
 
+    //  opens the root directory
     let mut root = match sfs.open_volume() {
         Ok(r) => r,
         Err(_) => return Err("cannot open the volume")
@@ -35,16 +37,19 @@ pub fn load() -> Result<Box<[u8]>, &'static str> {
 
     let mut name_buf = [0u16; 256];
 
-    let filename = match CStr16::from_str_with_buf(KERNEL_PATH.trim_end_matches('\0'), &mut name_buf) {
+    //  converts the filename to UTF16
+    let filename = match CStr16::from_str_with_buf(KERNEL_PATH, &mut name_buf) {
         Ok(name) => name,
         Err(_) => return Err("failed to convert string into UTF16"),
     };
 
+    //  opens handle to the file
     let handle = match root.open(filename, FileMode::Read, FileAttribute::empty()) {
         Ok(h) => h,
         Err(_) => return Err("cannot open kernel file")
     };
 
+    //  checks for a file (directory will fail the check)
     let mut file = match handle.into_regular_file() {
         Some(f) => f,
         None => return Err("path is not pointing to regular file")
@@ -52,7 +57,7 @@ pub fn load() -> Result<Box<[u8]>, &'static str> {
 
     let mut info_buf = [0u8; 512];
 
-    let info: &mut FileInfo = match file.get_info(&mut info_buf) {
+    let info: &FileInfo = match file.get_info(&mut info_buf) {
         Ok(info) => info,
         Err(_) => return Err("cannot get file info")
     };
@@ -60,7 +65,7 @@ pub fn load() -> Result<Box<[u8]>, &'static str> {
 
     let mut loaded: Box<[u8]> = unsafe { Box::new_zeroed_slice(file_len).assume_init() };
 
-    if let Err(_) = file.read(loaded.as_mut()) {
+    if let Err(_) = file.read(&mut loaded) {
         Err("failed to load the file")
     } else {
         Ok(loaded)
@@ -223,18 +228,6 @@ impl Debug for Permissions {
         }
     }
 }
-
-
-/*#[repr(transparent)]
-pub struct Pml4 {
-    physical: NonNull<u8>
-}
-
-impl core::fmt::Pointer for Pml4 {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:p}", self.physical)
-    }
-}*/
 
 /// Covers the prepared kernel in virtual address space
 pub fn setup_paging(meta: &MetaData, info: &BootInfo) -> Result<(), &'static str> {

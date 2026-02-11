@@ -16,12 +16,6 @@ use crate::{kernel::BootInfo};
 #[entry]
 fn main() -> Status {
 
-
-    println!("Hello world!");
-
-    boot::stall(100_000_000);
-
-
     uefi::helpers::init().expect("failed to initialize helpers");
 
     let mut boot_info = match BootInfo::collect() {
