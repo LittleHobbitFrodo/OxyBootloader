@@ -28,6 +28,15 @@
         3. [Obtaining information about the file](#obtaining-information-about-the-file)
         4. [Reading the file](#reading-the-file)
 7. [Paging and the x86_64 crate](#paging-and-the-x86_64-crate)
+    1. [Memory protection in general](#memory-protection-in-general)
+    2. [Paging - briefly](#paging---briefly)
+        1. [Paging in general](#paging-in-general)
+        2. [Math, tables and entries](#math-tables-and-entries)
+        3. [Paging is like onion](#paging-is-like-onion)
+        4. [Virtual addresses](#virtual-addresses)
+        5. [Caching](#caching)
+        6. [Identity mapping](#identity-mapping)
+    3. [`x86_64` crate](#x86_64-crate)
 8. [Parsing the ELF using goblin](#parsing-the-elf-using-goblin)
 9. [Gathering boot info](#gathering-boot-info)
 10. [Passing the information to the kernel](#passing-the-information-to-the-kernel)
@@ -149,7 +158,7 @@ So `cargo build --target x86_64-unknown-uefi` and we are done.
 
 The bootloader is stored in UEFI system partition. It is (usually) small FAT-32 partition that stores the bootloader and its files together with the OS kernel that will be loaded. Luckily, you do not have to create an image of the partition, just its file structure. So lets begin.
 
-For simplicity, the bootloader itself must be located in the `/EFI/BOOT/` directory and must be named `BOOTX64.EFI` (on x86_64 systems). Other components, such as configuration or kernel, can be located anywhere in the partition, as the bootloader loads them manually. The kernel in the example project is located in `/oxy/kernel.elf`.
+For simplicity, the bootloader itself must be located in the `/EFI/BOOT/` directory and must be named `BOOTX64.EFI` (on x86_64 systems). The compiled bootloader is usually put into `target/x86_64-unknown-uefi/debug-or-release` (from project root directory). Other components, such as configuration or kernel, can be located anywhere in the partition, as the bootloader loads them manually. The kernel in the example project is located in `/oxy/kernel.elf`.
 
 Once you have the UEFI system partition structure ready, you can run the bootloader in emulator.
 
@@ -334,19 +343,119 @@ let mut loaded: Box<[u8]> = unsafe { Box::new_zeroed_slice(file_size)
     .assume_init() };
 
 file.read(&mut loaded).expect("failed to load the kernel");
-
 ```
 
 
-## Paging and the x86_64 crate
+## Paging and the `x86_64` crate
+
+### Memory protection in general
+
+Some computers, such as controllers or other single-processor computers have two types of memory. RAM and ROM. ROM (short for **R**ead **O**nly **M**emory) contains all executalbe code. On the other hand, RAM (**R**andom **A**ccess **M**eory) stores the stack and heap (mutable memory in general).
+
+But when advanced computers came along, operating systems commonly loaded more programs into RAM at the same time. The problem was that all the programs a single one memory. One shared memory for all executable code, stacks, heaps and the operating system itself. You guessed it, this caused certain problems...
+
+At this time, the first attempts to create a certain level of memory protection appeared. The first memory protection mechanism in x86 was implemented on 16-bit processors. It is called segmentation.
+
+[Segmentation](https://wiki.osdev.org/Segmentation) is not that complicated: you have a list of segment descriptors that is used to divide existing memory into segments, each with its own permissions. X86 processors also has a set of segment registers. These registers are used by the operating system to set which memory a currently running program can use and how.
+
+When first 32-bit processors we introduced, this mechanism was simply extended to 32-bit address space and descriptors with backwards compatibility in mind.
+
+The problem with segmentation is that it is very difficult to manage effectively. It's a common vector problem: it's effective for push and pop, but not so much for inserting or removing.
+
+Paging solves this problem!
+
+And adds a lot of complexity and abstraction to it...
+
+### Paging - briefly
+
+> This chapter contains only the most important information, visit [OSDev wiki](https://wiki.osdev.org/Paging) to read more.
+
+Have you ever looked at your pointers and said to yourself, "Wait a minute, I don't have that much memory"?
+
+No? Nevermind...
+
+#### Paging in general
+
+Compared to segmentation, paging is a pretty abstract and complicated concept. Don't worry if you don't get it right away. It took me about a month to understand it, and mistakes are still on my daily menu.
+
+Address types:
+- **Virtual** addresses are converted to physical addresses by the CPU. They are used to strictly limit what memory each program can use and how it can use it. Regular computers are using 48 bits of the virtual address.
+- **Physical** addresses are pointing to the real location in the physical memory.
+
+#### Math, tables and entries
+
+To do a deep dive into the concept of paging, we must first to introduce a few terms:
+- A **page table** is an **array of 512 page entries**. It occupies exactly 4KB of memory and its address is always aligned to 4KB. Why these numbers? Those numbers are quite important...
+- A **page Entry** is a 64-bit binary structure that stores 36 bits of memory address. The remaining 28 bits are treated as flags or are unused.
+
+Lets take a look at the numbers. Each page entry is 64 bits, or 8 bytes. Each page table stores 512 entries. How much is `8 * 512`? Exactly `4096`, or 4KB. Now we see that each page table is 4KB in size.
+
+Remember how I told you that only 48 bits of a virtual address are used? And how I told you that each page entry contains 36 bits of the physical address? Yes, correct. I lied.
+
+Since converting 48 bit virtual addresses to 36 bit physical addresses makes no sense, page entries use one simple trick: they actually contain only 36 bits of the address, but are interpreted as 48 bits. How? When you look at the table entry [structure](https://wiki.osdev.org/images/thumb/4/41/64-bit_page_tables1.png/450px-64-bit_page_tables1.png), you can see that the first 12 bits are flags. How much is `36 + 12`? Yes, `48`. See how it fits together? Those 36 bits of the physical address stored in the entry are only the upper 36 bits. The other (lower) 12 bits are not present in the entry and are treated as cleared.
+
+These 12 unused/cleared bits ensure that each address referenced by a table entry is aligned to 2 to the power of 12. Which is `4096`, or 4KB. And now you know why the page tables are aligned too!
+
+#### Paging is like onion
+
+Paging consists of a four-level tree structure that the CPU traverses. The path through the graph is the actual virtual address, which contains indexes for each level.
+
+Levels:
+1. **PML4** - **P**age **M**ap **L**evel **4**, **PS** page size: 512 GB.
+2. **PDPT** - **P**age **D**irectory **P**ointer **T**able, **PS** page size: 1 GB.
+3. **PD** - **P**age **D**irectory, **PS** page size: 2 MB.
+4. **PT** - **P**age **T**able entry, **PS** is unsupported at this level.
+> The list is reversed, PML4 is generally considered to be the fourth level.
+
+The CPU begins the traversal by looking at the address in the `cr3` control register. This is the physical address of the **PML4** table. It then obtains the PML4 index from the virtual address to read an entry at that position.
+
+The CPU then continues by reading the flags of the entry: if the **P**resent flag is cleared, a page fault is triggered, which is caught by the operating system. Otherwise, it continues by checking the **P**age **S**ize flag. If it is set, the pml4 entry is considered a pointer to a 512 GB page. Otherwise, the entry is considered a pointer to a third-level table.
+
+The CPU then obtains the index for the next level and reads entry at the position. Checks the **P**resent and **P**age **S**ize flags. If **PS** is set, the entry is considered a pointer to 1GB (or 2MB at the PD level) page. Otherwise the CPU goes to the next level. This cycle continues to the first level, where all entries always point to a 4 KB page, or until it finds entry with the **PS** flag set.
+
+When the page address is found, the CPU simply adds the offset from the virtual address to it.
+
+#### Virtual addresses
+
+Paging works on the concept of translating virtual addresses to physical addresses in the MMU (**M**emory **M**anagement **U**nit) within the CPU. Each virtual address is a binary structure that allows the MMU to navigate within a **4 level tree structure** to translate the virtual address to a physical address. Mind blowing, right?
+
+Each virtual address is 64-bit binary structure. Lets see what's inside:
+- **Offset** is the lowest 12 bits, representing the offset from the 4KB aligned memory region referenced by the last page table.
+- **PT index**: Next 9 bits are used to navigate the fourth page table (in the PT level). As you can see that 9 bits can hold maximum value of 511.
+- **PD index**: Next 9 bits used to navigate the third page table (in the PD level).
+- **PDPT index**: Another 9 bits. Used to navigate the second page table (in the PDPT level).
+- **PML4 index**: The last 9 bits. Used to navigate the first page table (in the PML4 level).
+- **Sign**: The remaining 16 bits. All bits must be set to 0 for user processes or to 1 for the OS kernel.
+
+You can visualize it like this (MSB on the left):
+| 64 - 48 | 47 - 39 | 38 - 30 | 29 - 21 | 20 - 12 | 11 - 0 |
+|------|------|------|----|----|--------|
+| Sign | PML4 | PDPT | PD | PT | Offset |
+| 16b | 9b | 9b | 9b | 9b | 12b |
+
+### Caching
+
+To make the conversion of virtual addresses to physical addresses faster, the CPU contains a cache that speeds up the conversion.
+
+The whole cache can be flushed by simply writing into the `cr3` register. On the other hand the `INVLPG` (invalidate tlb entry) instruction invalidates/removes only one address. This is important when you remove valid addresses from the address space to prevent some problems.
 
 
+#### Identity mapping
+
+UEFI runs the bootloader in what is known as an [identity-mapped](https://wiki.osdev.org/Identity_Paging) virtual address space. Identity mapping means that each virtual address directly corresponds to its physical address. Simply put, virtual address `0xBEEF` would refer to physical address `0xBEEF`.
+
+### `x86_64` crate
+
+Although x86_64 paging makes sense and is well designed, it can be quite a challenge. Fortunately (for us), the Rust OSdev team maintains the [`x86_64`](https://crates.io/crates/x86_64) crate. It provides safe abstractions over some x86_64-specific instructions and (most importantly) virtual address space mappers. These are the things that do paging for us.
+
+We will use the `Cr0::update()` function to disable memory protection. And for paging, we will use the `OffsetPageTable` mapper together with our own frame allocator.
 
 ## Parsing the ELF using goblin
+
+
 
 ## Gathering boot info
 
 ## Passing the information to the kernel
 
 ## Simple kernel in C
-### Drawing lines
