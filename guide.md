@@ -38,6 +38,10 @@
         6. [Identity mapping](#identity-mapping)
     3. [`x86_64` crate](#x86_64-crate)
 8. [Parsing the ELF using goblin](#parsing-the-elf-using-goblin)
+    1. [Elf file](#elf-file)
+    2. [Mapper and frame allocator](#mapper-and-frame-allocator)
+    3. [Write protection](#write-protection)
+    4. [Mapping the kernel](#mapping-the-kernel)
 9. [Gathering boot info](#gathering-boot-info)
 10. [Passing the information to the kernel](#passing-the-information-to-the-kernel)
 11. [Simple kernel in C](#simple-kernel-in-c)
@@ -204,7 +208,7 @@ jmp loop
 The whole code does exactly this:
 1. `extern _start`: Creates `_start` symbol reference and leaves its resolution to the linker.
     - Makes it visible to our bootloader.
-2. `cli` (**CL**ear **I**nterrupt): This instruction disables interrupts by setting a bit in one of the control registers.
+2. `cli` (**CL**ear **I**nterrupt): This instruction disables interrupts by flipping a bit in one of the control registers.
     - You can find more on the [OSDev Wiki](https://wiki.osdev.org/Interrupts)
 3. `hlt`: Disables execution of code until interrupt occur
     - Interrupts are disabled, so the execution shall not continue from here.
@@ -451,8 +455,162 @@ Although x86_64 paging makes sense and is well designed, it can be quite a chall
 We will use the `Cr0::update()` function to disable memory protection. And for paging, we will use the `OffsetPageTable` mapper together with our own frame allocator.
 
 ## Parsing the ELF using goblin
+> This logic is split into `kernel::prepare()` and `kernel::map_kernel_section()` functions in the example project.
+
+[`goblin`](https://crates.io/crates/goblin)  lets you analyze different executable file formats in just a "few" lines of code. For this guide, we'll only use the ELF format.
+
+Since UEFI does not offer any functionality for working with custom virtual addresses, we have to do the paging ourselves... Or we can leave it to the `x86_64` crate!
+
+### Elf file
+
+Once you load the ELF executable file (our kernel), you can let `goblin` do the dirty work for you and analyze the file.
+
+For this we can use the `Elf::parse()` function which returns an `Result` containing the parsed `Elf`. It takes reference to the loaded file as slice of bytes.
+
+The usage is as simple as this:
+```rust
+
+//  let loaded:  Box<[u8]> = load_kernel() ...
+
+use goblin::elf::Elf;
+
+let elf = match Elf::parse(loaded.as_ref()) {
+    Ok(elf) => elf,
+    Err(e) => {
+        //  ...
+    },
+};
+```
+
+Since `goblin` does most of the work for us, we can take a look directly at the program headers. Each program header describes a segment of the program. It tells us what to load, were to load it and how to load it. All loadable segments are labeled with `PT_LOAD`.
+
+We can simplify this by creating an iterator that filters out all headers we do not need:
+```rust
+let mut iter = elf.program_headers.iter();
+for header in  iter.filter(|head| head.p_type == program_header::PT_LOAD ) {
+    //  parse the header
+}
+```
+
+Each header contains these properties:
+- `p_vaddr`: This is the starting virtual address of the loaded segment.
+- `p_memsz`: Amount of bytes to allocate for the segment.
+- `p_filesz`: Amount of bytes to copy from the file.
+- `p_offset`: Starting location (offset) from the start of the file
+  - Copy exactly `p_filesz` bytes from here.
+
+Permissions for each segment can be determined by calling `header.is_executable()` and `header.is_write()`.
 
 
+### Mapper and frame allocator
+
+The `OffsetPageTable` mapper works with its frame allocator and an offset. We are in identity-mapped environment, so the offset is naturally zero.
+
+First, we need to create a frame allocator. Don't worry, we don't have to create the allocator from scratch. We can use the fantastic `uefi::boot::allocate_pages()` function. **Warning**: this function (even though its name suggests otherwise) actually allocates physical frames instead of virtual pages. The difference is that classic virtual page allocation covers the physical address with virtual address space. In contrast, frame allocation only marks a piece of physical memory as used (without covering it).
+
+First, we need to create an empty structure. Then we need to implement the `FrameAllocator` trait for it. This trait consists of one function that we need to implement: `fn allocate_frame()`, which in this case serves as a harness for the `allocate_pages()` function:
+```rust
+use x86_64::structures::paging::{FrameAllocator, Size4KiB, PhysFrame};
+use uefi::boot::allocate_pages;
+
+struct FrameAlloc;
+
+unsafe impl FrameAllocator<Size4KiB> for FrameAlloc {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        //  allocate physical frame
+        let frame = allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1).ok()?;
+
+        //  convert to PhysAddr
+        let phys = PhysAddr::new((frame.as_ptr() as usize) as u64);
+
+        //  PhysAddr to PhysFrame
+        Some(PhysFrame::containing_address(phys))
+    }
+}
+```
+
+Now we can create a mapper using the `OffsetPageTable::new()` function, which takes reference to the PML4 table and an offset. How do we get the reference to the PML4 table? We use a little inline assembly to read the `cr3` control register. Since the four least significant bits of the register are considered flags, we need to clear them.
+```rust
+use core::arch::asm;
+
+let pml4: &'static mut PageTable = unsafe {
+    let mut cr3: u64;
+
+    //  load the cr3 into the variable
+    asm!("mov {}, cr3", out(reg) cr3);
+
+    //  clear first 12 bits
+    cr3 &= !0xfff;
+
+    //  convert to static mutable reference
+    NonNUll::new_unchecked((cr3 as usize) as *mut PageTable).as_mut();
+};
+
+//  create mapper with offset equal to 0
+let mut mapper = unsafe { OffsetPageTable::new(pml4, VirtAddr::new(0)); };
+```
+
+### Write protection
+
+Now try mapping an address. Did it freeze? You may be surprised, but freezing is expected behavior. Since the PML4 table is located in a write-protected memory region, we cannot write to it.
+
+How to get around this?
+
+We have to modify the `cr0` register ro remove the `WRITE_PROTECT` flag with `Cr0::update()` function:
+```rust
+Cr0::update(|flags| flags.remove(Cr0Flags::WRITE_PROTECT) );
+```
+
+> If the IDE/text editor is screaming errors, try to compile it... The function is enabled only for baremetal targets, so rust-analyzer thinks it does not exits.
+
+After completing the mapping routine, we need to re-enable the protection for... well, kernel memory protection. You can do this using the same routine, but with the `flags.insert()` function instead of `remove()`.
+
+
+### Mapping the kernel
+
+Our kernel is now just one executable page. In fact, it's only a few bytes, so I won't go into details here.
+
+To map each section of the kernel, we need to prepare few things:
+- Virtual address of the section.
+- Physical frame for each section.
+- `PageTableFlags`: permissions for the section.
+
+Then we can use the `mapper.map_to_with_table_flags()` function to cover the physical region in virtual address space. The next step is to allocate the physical region and copy the executable data into correct location:
+
+```rust
+let mut virt = VirtAddr::new(header.p_vaddr);
+
+let mut phys = allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, page_count) /*as u64*/;
+let mut frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(PhysAddr::new(phys));
+
+let flags = /*resolve PageTableFlags*/;
+//  parent tables must always be writeable
+let parent_flags = PageTableFlags::WRITABLE | PageTableFlags::PRESENT;
+
+unsafe {
+
+    //  map addresses
+    match mapper.map_to_with_table_flags(Page::containing_address(virt), frame, flags, parnet_flags, frame_alloc) {
+        Ok(flush) => flush.ignore(),
+        Err(_) => {
+            //  treat errors
+        }
+    }
+
+    //  copy data
+    let region = NonNull::new_unchecked(phys as *const u8);
+    let file_ptr = NonNull::new_unchecked(loaded.as_ptr());
+    let offset = header.p_offset as usize;
+    let copy_size = header.p_filesz as usize;
+
+    region.copy_from_nonoverlapping(file_ptr.add(offset), copy_size);
+
+}
+```
+
+The provided code works only when mapping one page per section.
+
+> Do not forget to re-enable the memory protection!
 
 ## Gathering boot info
 

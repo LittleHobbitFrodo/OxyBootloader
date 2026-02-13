@@ -78,7 +78,7 @@ pub fn load() -> Result<Box<[u8]>, &'static str> {
 pub fn prepare(kernel: Box<[u8]>) -> Result<MetaData, String> {
 
     //  let goblin parse the elf file
-    let elf = match Elf::parse(kernel.as_ref()) {
+    let elf = match Elf::parse(&kernel) {
         Ok(elf) => elf,
         Err(e) => {
             let mut msg = String::from("failed to parse kernel: ");
@@ -106,12 +106,8 @@ pub fn prepare(kernel: Box<[u8]>) -> Result<MetaData, String> {
 
     let mut sections = Vec::new();
 
-    for header in elf.program_headers.iter() {
+    for header in elf.program_headers.iter().filter(|head| head.p_type == program_header::PT_LOAD ) {
 
-        if header.p_type != program_header::PT_LOAD {
-            //  not loadable segment
-            continue;
-        }
 
         uefi::println!("preparing section {:p}", (header.p_vaddr as usize) as *const u8);
 
@@ -146,7 +142,7 @@ pub fn prepare(kernel: Box<[u8]>) -> Result<MetaData, String> {
             pages.copy_from_nonoverlapping(file_ptr.add(file_offset), copy_size);
 
             //  set any other data to zero
-            pages.add(copy_size).write_bytes(0, (page_count as usize * 4096) - copy_size);
+            //pages.add(copy_size).write_bytes(0, (page_count as usize * 4096) - copy_size);
         }
 
         sections.push(Section {
@@ -235,17 +231,18 @@ pub fn setup_paging(meta: &MetaData, info: &BootInfo) -> Result<(), &'static str
     //  makes it possible to write into write-protected PML4 table
     unsafe { Cr0::update(|flags| flags.remove(Cr0Flags::WRITE_PROTECT)); }
 
-    let mut pml4 = unsafe {
-        let mut cr3: u64 = 0;
+    let mut pml4: &'static mut PageTable = unsafe {
+        let mut cr3: u64;
         core::arch::asm!(
             "mov {}, cr3",
             out(reg) cr3,
         );
-        NonNull::new_unchecked(((cr3 & !0xfff) as usize) as *mut PageTable)
+        cr3 &= !0xfff;
+        NonNull::new_unchecked((cr3 as usize) as *mut PageTable).as_mut()
     };
 
     let mut frame_alloc = FrameAlloc;
-    let mut mapper = unsafe { OffsetPageTable::new(pml4.as_mut(), VirtAddr::new(0)) };
+    let mut mapper = unsafe { OffsetPageTable::new(pml4, VirtAddr::new(0)) };
 
 
     //  map kernel sections
@@ -280,7 +277,7 @@ pub fn setup_paging(meta: &MetaData, info: &BootInfo) -> Result<(), &'static str
 pub unsafe fn map_kernel_section(mapper: &mut OffsetPageTable, section: &Section, frame_alloc: &mut impl FrameAllocator<Size4KiB>) -> Result<(), &'static str> {
 
     let mut virt = VirtAddr::new((section.address.as_ptr() as usize) as u64).align_down(4096u64);
-    let mut frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(PhysAddr::new(section.phys as u64).align_down(4096u64));
+    let mut frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(PhysAddr::new(section.phys as u64));//.align_down(4096u64));
     let flags = section.perms.into_page_flags();
 
     for _ in 0..section.page_count {
