@@ -43,14 +43,17 @@
     3. [Write protection](#write-protection)
     4. [Mapping the kernel](#mapping-the-kernel)
 9. [Gathering boot info](#gathering-boot-info)
+    1. [UEFI GOP](#uefi-gop)
+    2. [MMIO and framebuffer](#mmio-and-framebuffer)
+    3. [Obtaining the framebuffer](#obtaining-the-framebuffer)
+    4. [CPU rendering demonstration](#cpu-rendering-demonstration)
+    5. [Packing it up](#packing-it-up)
 10. [Passing the information to the kernel](#passing-the-information-to-the-kernel)
 11. [Simple kernel in C](#simple-kernel-in-c)
 
 ---
 
 ## About the guide
-
-> **PLEASE READ**: Most example routines are performed on a **LINUX SYSTEM** (Fedora 43).
 
 This text is not a complete manual, but rather a guide describing the development of a very simple bootloader for the x86_64 bootloader. It covers most of what a bootloader needs to do to start the kernel.
 
@@ -613,6 +616,95 @@ The provided code works only when mapping one page per section.
 > Do not forget to re-enable the memory protection!
 
 ## Gathering boot info
+
+> This guide only includes a practical example of how to find information about the framebuffer, i.e., the graphics output.
+
+As you may have suspected, the kernel of the operating system needs certain information to boot. This information may include the layout of physical and/or virtual memory, graphics output, etc.
+
+We will only focus on graphics output.
+
+### UEFI GOP
+
+UEFI exposes so-called UEFI [GOP](https://wiki.osdev.org/GOP) (**G**raphics **O**utput **P**rotocol) protocol. What it does is quite self explaining...
+
+GOP is used to render graphics by bootloaders, OS installers and other utilities like OS recovery. Unfortunatrly what GOP does provide is GPU acceleration. After all its only a temporary solution to graphics rendering.
+
+### MMIO and framebuffer
+
+The GOP protocol consists mainly of a framebuffer and its metadata. What is a framebuffer? Simply put, it is an array of pixels. But how can an array of pixels control what is displayed on the screen? This is because the framebuffer is in MMIO-mapped memory.
+
+MMIO (**M**emory **M**apped **I**nput and **O**utput) is basically fake memory. Fake in the sense that it is not memory, but rather an abstraction of an IO interface. Let me explain: when you want to send or receive some information from any device (such as keyboard, timer, etc.) you use the `outd`/`ind` (or alternative) instructions. These instructions tells the device that it should either send or receive data. But since MMIO disguises itself as memory, the memory read/write request is sent to the MMU, where the MMU decides whether to send it to memory or to some other device. In this case, perhaps the display.
+
+So when you write to the framebuffer, it is not stored in memory but sent to the display.
+
+### Obtaining the framebuffer
+
+To obtain the framebuffer, we first need to get the handle to it and the open the protocol. The last time we were opening an protocol, it was quite simple> just the `boot::get_image_file_system()` function and we were done. This time we are not so lucky.
+
+We need to open the protocol with the `boot::open_protocol()` function which requires us to construct the `OpenProtocolParams` structure that is the passed to the function. We can create it by passing in the GOP protocol handle, our image handle and an controller, which is only used for UEFI drivers and therefore set to `None`.
+```rust
+let handle = match get_handle_for_protocol::<GraphicsOutput>()
+    .expect("failed to obtain GOP handle");
+
+let params = boot::OpenProtocolParams {
+    handle, agent: boot::image_handle(), controller: None
+};
+
+let mut gop: ScopedProtocol<GraphicsOutput> = match unsafe {
+    open_protocol(gop_params, OpenProtocolAttributes::GetProtocol)
+}.expect("failed to obtain GOP");
+```
+
+Now we can use the protocol to access the framebuffer metadata:
+- `gop.resolution()` returns a tuple representing the framebuffer dimensions in pixels: `(width, height)`.
+- `gop.pixel_format()` provides us with a `PixelFormat` enumeration that tells us the framebuffer format. Usually `Rgb`.
+  - Since we are running the bootloader in Qemu, we can assume that the format is `Rgb` (4 bytes per pixel).
+- `gop.frame_buffer()` returns a pointer to the actual framebuffer MMIO-mapped data.
+
+### CPU rendering demonstration
+
+To demonstrate how does the framebuffer work I will show you how to clear the display and the draw a line.
+
+Once you have access to the framebuffer metadata, you can treat its data as an slice:
+```rust
+//  assuming rgb format
+let ptr = gop.frame_buffer().as_mut_ptr() as u32;
+let size = gop.resolution().0 * gop.resolution().1;
+
+//  represnt the framebuffer data as slice
+let data: &mut [u32] = unsafe {
+    core::ptr::slice_from_raw_parts_mut(ptr, size).as_mut().unwrap()
+};
+```
+
+Clearing the framebuffer is simple: just iterate through the pixels and set them all to 0, which represents black in RGB. As for the line, it's not complicated either. Since a horizontal line starting in the upper right corner would be easy to overlook, we'll draw it across. To do this, simply index the array by the horizontal index plus the vertical index multiplied by the width of the framebuffer.
+```rust
+//  clear the screen
+for pixel in data.iter_mut() {
+    *pixel = 0; //  clear the pixel
+}
+
+//  draw the line (100 pixels in length)
+for i in 0..100 {
+    //  0xFFFFFF represents white
+    data[i + (i * gop.resolution().0)] = 0xFFFFFF;
+}
+```
+
+The output on the screen will look like this:
+![CPU renering](assets/CPU-rendering-exaple.png)
+
+### Packing it up
+
+Most real boot loaders use a request-response approach to deliver information to operating systems. The operating system essentially creates a static request structure, which the bootloader detects and fills with data. You can check out the [Limine protocol specification](https://codeberg.org/Limine/limine-protocol/src/branch/trunk/PROTOCOL.md), Limine's own bootloader protocol. If you want to create your first operating system kernel, I highly recommend trying limine for its simplicity and the limine-rs Rust wrapper.
+
+We will choose the simple method, where the bootloader collects all the information the kernel may need and packs it into a structure. The kernel then receives the data in the form of a pointer to the structure, which is passed to it as a parameter.
+
+For this purpose I created the `BootInfo` structure in the [`kernel/boot-info.rs`](src/kernel/boot_info.rs) file.
+
+## Switching to kernel
+
+
 
 ## Passing the information to the kernel
 

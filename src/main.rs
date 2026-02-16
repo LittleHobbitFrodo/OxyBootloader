@@ -1,7 +1,7 @@
 #![no_main]
 #![no_std]
 
-use core::time::Duration;
+use core::{ptr::{NonNull, slice_from_raw_parts_mut}, time::Duration};
 use uefi::{boot::{MemoryType, memory_map}, mem::memory_map::MemoryMap};
 pub use uefi::{self, entry, Status, print, println};
 mod prelude;
