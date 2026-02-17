@@ -5,7 +5,7 @@
 //  stops kernel execution
 void hang(void) {
     for (;;) {
-        //asm volatile("cli\nhlt");
+        asm volatile("cli\nhlt");
     }
 }
 
@@ -46,25 +46,3 @@ extern void _start(struct OxyBootInfo* volatile info) {
 
     hang();
 }
-
-/*#define draw_vline(x, y, len)\
-do {\
-    usize _y = (y);\
-    usize _x = (x);\
-    usize _len = (len);\
-    for (usize i = 0; i < _len; i++) {\
-        fb[((_y + i) * w) + _x] = 0xffffff;\
-    }\
-
-} while (0)
-
-#define draw_hline(x, y, len)\
-do {\
-    usize _y = (y);\
-    usize _x = (x);\
-    usize _len = (len);\
-    for (usize i = 0; i < _len; i++) {\
-        fb[(_y * w) + i + _x] = 0xffffff;\
-    }\
-
-} while (0)*/

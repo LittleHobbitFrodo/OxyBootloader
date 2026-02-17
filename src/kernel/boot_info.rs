@@ -40,6 +40,8 @@ impl BootInfo {
             Err(_) => return Err(String::from("failed to allocate memory for stack"))
         };
 
+
+
         //uefi::println!("getting the framebuffer:");
 
         let fb = match get_framebuffer() {

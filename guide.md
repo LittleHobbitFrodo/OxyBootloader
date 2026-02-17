@@ -48,7 +48,11 @@
     3. [Obtaining the framebuffer](#obtaining-the-framebuffer)
     4. [CPU rendering demonstration](#cpu-rendering-demonstration)
     5. [Packing it up](#packing-it-up)
-10. [Passing the information to the kernel](#passing-the-information-to-the-kernel)
+10. [Switching to kernel](#switching-to-kernel)
+    1. [Stack](#stack)
+    2. [Goodbye boot services](#goodbye-boot-services)
+    3. [The assmebly routine](#the-assmebly-routine)
+    4. [Does it work?](#does-it-work)
 11. [Simple kernel in C](#simple-kernel-in-c)
 
 ---
@@ -571,6 +575,8 @@ After completing the mapping routine, we need to re-enable the protection for...
 
 ### Mapping the kernel
 
+> Note: For simplicity, we map the kernel's virtual address space to the space belonging to the boot loader.
+
 Our kernel is now just one executable page. In fact, it's only a few bytes, so I won't go into details here.
 
 To map each section of the kernel, we need to prepare few things:
@@ -700,12 +706,141 @@ Most real boot loaders use a request-response approach to deliver information to
 
 We will choose the simple method, where the bootloader collects all the information the kernel may need and packs it into a structure. The kernel then receives the data in the form of a pointer to the structure, which is passed to it as a parameter.
 
+There is one more thing you will need: Rust can rearrange the individual members of your structures as it pleases (apparently for optimization purposes). However, since the operating system kernel does not know what order they will be in, we need to prevent this. This is done using the `#[repr(C)]` attribute, which tells the compiler that the structure must be compatible with C and therefore cannot be changed.
+
 For this purpose I created the `BootInfo` structure in the [`kernel/boot-info.rs`](src/kernel/boot_info.rs) file.
 
 ## Switching to kernel
 
+Although switching to the kernel is not difficult, debugging it can be quite frustrating. You have to nail many things just right. Mainly kernel virtual address space mapping, elf file parsing, etc.
 
+And as usual, the emulator leaves only cryptic messages about what happened.
 
-## Passing the information to the kernel
+All you need to do is prepare the kernel stack and the pointer to the boot information. Then exit the boot services and run a small piece of assembly code.
+
+### Stack
+
+> The stack allocation routine is loacted in the [`BootInfo::collect()`](src/kernel/boot_info.rs) function in the example project.
+
+We could teoretically use the bootloader stack, but that wouln't be much fun...
+
+It's not complicated. Just allocate enough pages, so one call to `allocate_pages()` is enough. That's (almost) it. But since x86_64 only supports a descending stack, we need to calculate the stack top. This is the pointer we pass to the kernel.
+
+```rust
+//  allocate 32KB of stack memory
+let stack_bottom = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 8)
+    .expect("failed to allocate stack");
+
+//  passed to the kernel
+let stack_top = unsafe {
+    stack_top.add(8 * 4096)
+};
+```
+
+### Goodbye boot services
+
+It seems we have reached the point where we no longer need boot services. By exitting UEFI boot services, we will unlock runtime services.
+
+This is done using the `exit_boot_services()` function. It wants to know where to place the current memory map. Since we have no specific requirements, we will leave the first parameter set to `None` to use the defaults.
+
+### The assmebly routine
+
+The assembly routine itself is simple too. This is all we want from it:
+1. Set the first function parameter to the boot information pointer.
+2. Use the allocated stack.
+3. Jump to the kernel entrypoint.
+
+In the example project, this process is somewhat complicated, so I will explain it. The `kernel::switch_to_kernel()` function accepts `MetaData` and `BootInfo` structures. Inside, the boot information is moved to `Box`, which is leaked and therefore will not be dropped. It contains a stack pointer and a framebuffer. On the other hand, in the `MetaData` structure, we are interested in the kernel entry point.
+
+But how do we pass the pointer to the boot information? According to C calling conventions, we simply write the pointer to the `rdi` register, which is considered the first parameter.
+
+As for the stack, we must write the pointer to the top of the stack to the `rsp` register and reset the `rbp` register. 
+
+```rust
+unsafe {
+    asm!(
+        "cli                        #   turn off interrupts (just in case)
+        mov rdi, {boot_info_ptr}    #   initialize the first param
+        mov rsp, {stack_top}        #   use the new stack
+        xor rbp, rbp                #   clear previous (bootloader) stack frame pointer
+        jmp {kernel_entry}          #   jump to the entry point",
+        kernel_entry = in(reg) kernel_entry,
+        boot_info_ptr = in(reg) boot_info_ptr,
+        stack_top = in(reg) stack_top
+    );
+}
+```
+
+### Does it work?
+
+Thats hard to tell...
+
+Since our simplified kernel is designed to stop the CPU, we can only look at the logs. If you find a line starting with `check_exception old:<hexadecimal number> new <hexadecimal number>`, it means that an error has occurred. You can then search for the error on the [OSDev wiki](https://wiki.osdev.org/Exceptions) and analyze it. The error code is recorded as the second hexadecimal number, i.e., after the word `new`. Look for the column titled "Vector nr. ".
 
 ## Simple kernel in C
+
+If your kernel switch works, why stop the CPU? Let it do something!
+
+In this chapter, I have prepared a simple kernel written in C that draws a nice little square in the middle of the screen.
+
+To pinpoint a possible point of failure I should tell you that you cannot use the C standard library and/or most of its parts. To keep things operational, I prefer to use only the `stdint.h` header in the entire kernel.
+
+### Boot information
+
+> Rewrite the `BootInfo` structure into C like I did: [Rust bootloader code](src/kernel/boot_info.rs) to [C kernel code](kernel/boot_info.h)
+
+In order to access the boot information, the kernel needs to know its structure. So you (yes, you) need to rewrite the entire structure in C. It shouldn't be difficult, but I understand you have better things to do...
+
+However, here's a tip: reintroduce Rust's primitive types to make it easier:
+```c
+#include <stdint.h>
+typedef uint64_t u64;
+typedef uint32_t u32;
+typedef uint16_t u16;
+typedef uint8_t u8;
+typedef uint64_t usize;
+```
+
+The kernel can consist of only a few functions: the entry point (`_start()`), drawing functions, and the `hang()` function to stop the kernel in case something goes sideways.
+
+Since the [kernel source code](kernel/kernel.c) can be found in the repository and its logic is very simple, I will not deal with the source code at all. The only possible point of failure is incorrect reprezentation of the boot information structure.
+
+So let's focus on compilation.
+
+### Compilation
+
+> The [compilation](kernel/build.sh) and [linker](kernel/linker.ld) scripts can be found in the repository.
+
+As usual, you will probably need a special compiler to build the operating system kernel. Although I have always got by with the native `gcc` throughout my entire OS development journey. For some reason, it worked...
+
+I recommend using `x86_64-linux-gnu-gcc/ld` for compilation and linking.
+
+To compile the kernel correctly, you will also need these switches:
+- `-nostdlib` disables linking to the C standard library.
+- `-ffreestanding` tells the compiler that it is creating an executable for an environment without any OS/host system.
+- `-fno-builtin` makes gcc not make libc calls when it could be used.
+- `-fno-tree-vectorize` will forbid gcc from turning loops into SIMD expressions.
+- `-nostartfiles` disables linking with libc startup files that initialize the C runtime, etc.
+- `-mgeneral-regs-only` enables only general-purpose registers to avoid using SIMD, FPU, etc.
+- `-c` disables linking; we want to do this manually.
+
+### Linking
+
+The linker file can propably be very similar to the one we used to link the assmebly code.
+
+However we will need another set of switches for the linker:
+- `-m elf_x86_64` indicates that we want to create 64-bit ELF binary.
+- `-nostdlib` same as with gcc, no stdlib linking.
+- `-static` makes everything statically linked.
+- `--no-dynamic-linker` forbids dynamic linking.
+- `-z text` makes the `text` section read-only.
+- `-z max-page-size=0x1000` sets maximum page size to 4KB.
+
+### The final result
+
+After all the tears and blood... Well, maybe you don't feel it as strongly as I do...
+
+After all that effort, here it is. We can finally draw a square...
+
+![We made a square!](assets/square.png)
+

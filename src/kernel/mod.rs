@@ -314,12 +314,11 @@ pub fn switch_to_kernel(kernel_meta: MetaData, info: BootInfo) -> ! {
 
     unsafe {
         asm!(
-            r#"
-            cli
+            "cli    # just in case
             mov rdi, {info}
             mov rsp, {stack}
             xor rbp, rbp
-            call {entry}"#,
+            jmp {entry}",
             entry = in(reg) kernel_meta.entry,
             info = in(reg) boot_info,
             stack = in(reg) stack
