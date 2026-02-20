@@ -59,7 +59,7 @@
 
 ## About the guide
 
-This text is not a complete manual, but rather a guide describing the development of a very simple bootloader for the x86_64 bootloader. It covers most of what a bootloader needs to do to start the kernel.
+This text is not a complete manual, but rather a guide describing the development of a very simple bootloader for the x86_64 architecture. It covers most of what a bootloader needs to do to start the kernel.
 
 To be precise, the bootloader itself will be written in the Rust programming language using the `uefi` library. The demo kernel is written in C, but to simplify the early stages of development, an Assembly language kernel will be used.
 
@@ -74,7 +74,7 @@ So let's start with a quick introduction.
 ### Boot sequence
 > What happens when you press the start button on your computer?
 
-~~When you press the Start button, your computer will probably spin up its fans, then display the manufacturer's logo, and here is your operating system. Pretty straightforward, right? Well, not so much...~~
+When you press the Start button, your computer will probably spin up its fans, then display the manufacturer's logo, and here is your operating system. Pretty straightforward, right? Well, not so much...
 
 The Start button causes electricity to magically flow into the processor, which launches the firmware. The firmware is software stored in ROM (**R**ead-**O**nly **M**emory) on the motherboard. As you may have already figured out, firmware is the first piece of code that runs on your computer, but what does that actually mean? The firmware must initialize all components in your computer, including the keyboard, mouse, displays, and everything else, in order to run our bootloader.
 
